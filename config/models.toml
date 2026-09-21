@@ -1,0 +1,56 @@
+# ReadMate model configuration.  No model name is hardcoded anywhere in src/.
+
+# The default wiring reuses the same .env trio the rest of this project already
+# uses (BASE_URL / API_KEY / MODEL), so switching endpoint or model stays a
+# one-file change and no secret is ever written here.
+# Adding a second endpoint (a cheaper model for routing, a local one for
+# offline use) = add another [profiles.*] block and point a role at it.
+
+version = 1
+
+[roles]
+agent = "main"        # ReAct loop: must support tool calling
+router = "main"       # retrieval routing + query planning
+summarizer = "main"   # session summary compression
+
+[profiles.main]
+provider = "openai-compatible"
+base_url = "${BASE_URL}"
+api_key_env = "API_KEY"
+model = "${MODEL}"
+temperature = 0.0
+max_tokens = 4096
+supports_tools = true
+tool_choice = "auto"
+token_param = "max_tokens"
+# DashScope-compatible endpoints take this body flag; it keeps hidden reasoning
+# from eating the visible JSON answer.
+thinking = "extra_body"
+thinking_key = "enable_thinking"
+thinking_value = false
+timeout_s = 120.0
+max_retries = 1
+# D32: the model's context window, in tokens.  The agent budgets conversation
+# history as a fraction of it (AGENT_HISTORY_CONTEXT_RATIO, default 0.30), so a
+# wrong number here silently wastes or overflows the window.  Unknown models fall
+# back to 32768 and the process logs a warning at startup.
+context_length = 32768
+
+# --- Example: a second, cheaper endpoint for routing and summaries -----------
+# [profiles.cheap]
+# provider = "openai-compatible"
+# base_url = "https://your-endpoint.example/v1"
+# api_key_env = "CHEAP_API_KEY"
+# model = "your-cheap-model"
+# max_tokens = 1024
+# supports_tools = false        # router/summariser only
+#
+# --- Example: a local Ollama model ------------------------------------------
+# [profiles.local]
+# provider = "openai-compatible"
+# base_url = "http://127.0.0.1:11434/v1"
+# api_key_env = ""
+# model = "qwen3:8b"
+# max_tokens = 2048
+# supports_tools = true
+# timeout_s = 300.0

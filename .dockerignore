@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.idea
+.vscode
+tests
+test_data
+data
+.env
+DEVELOPMENT_STATUS.md
+*.md

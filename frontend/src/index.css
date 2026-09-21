@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 antialiased;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+/* answer markdown */
+.md-answer :is(p, ul, ol, blockquote) {
+  @apply my-2 leading-relaxed;
+}
+.md-answer table {
+  @apply my-2 border-collapse text-sm;
+}
+.md-answer th,
+.md-answer td {
+  @apply border border-gray-300 px-2 py-1;
+}
+.md-answer pre {
+  @apply my-2 overflow-x-auto rounded bg-gray-100 p-2 text-xs;
+}
+.md-answer code:not(pre code) {
+  @apply rounded bg-gray-100 px-1 py-0.5 text-[0.9em];
+}
+.md-answer blockquote {
+  @apply border-l-4 border-gray-300 pl-3 text-gray-600;
+}

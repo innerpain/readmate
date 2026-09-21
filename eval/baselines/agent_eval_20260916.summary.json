@@ -1,0 +1,314 @@
+{
+  "harness_version": "agent-eval-2",
+  "chain": "agent",
+  "total": 22,
+  "transport_errors": 0,
+  "outcome_counts": {
+    "ok": 13,
+    "adjacent_page": 1,
+    "budget_exhausted": 3,
+    "deny_unverified": 3,
+    "unfounded_answer": 2
+  },
+  "recompute_ok": true,
+  "recompute_note": "outcome_counts 一律由明细重算；row.outcome 只用于交叉校验",
+  "answerable": {
+    "n": 17,
+    "answered": 14,
+    "citation_hit_all": {
+      "n": 13,
+      "of": 17,
+      "denom": "expect=answer"
+    },
+    "citation_hit_answered": {
+      "n": 13,
+      "of": 14,
+      "denom": "expect=answer 且本轮作答"
+    },
+    "budget_exhausted": {
+      "n": 3,
+      "of": 17,
+      "denom": "expect=answer"
+    },
+    "gate_failed": {
+      "n": 0,
+      "of": 17,
+      "denom": "expect=answer"
+    }
+  },
+  "numbers": {
+    "coverage_ge_half": {
+      "n": 9,
+      "of": 12,
+      "denom": "expect=answer 且参考答案含数字"
+    },
+    "rows_without_numbers": {
+      "n": 5,
+      "rows": [
+        2,
+        6,
+        13,
+        15,
+        16
+      ],
+      "note": "旧口径把它们按 coverage=1.0 计入，于是 14 看起来大于 12 —— 分母必须写明"
+    }
+  },
+  "expect_deny": {
+    "n": 3,
+    "refuse_correct": 0,
+    "deny_unverified": 3,
+    "note": "规则无法区分「正确否证」与「幻觉式否证」，这些行进入 audit，不计为正确"
+  },
+  "expect_refuse": {
+    "n": 2,
+    "refuse_correct": 0,
+    "unfounded_answer": 2
+  },
+  "citations": {
+    "dropped_rows": 0,
+    "page_fidelity_mismatch_rows": 0
+  },
+  "latency_s": {
+    "mean": 22.7,
+    "p95": 45.85,
+    "min": 11.55,
+    "max": 68.08
+  },
+  "trajectory": {
+    "rounds_mean": 3.14,
+    "rounds_max": 6,
+    "tool_calls_mean": 3.36,
+    "tool_calls_max": 8,
+    "route_tracks_search_only": {
+      "direct": 43,
+      "planned": 5
+    },
+    "note": "工具调用数 ≠ 轮数：一轮可以并行多个调用；None 轨来自非 search 步，不计入"
+  },
+  "audit": {
+    "rows": [
+      4,
+      12,
+      20,
+      21,
+      22
+    ],
+    "count": 5,
+    "verdicts": {
+      "correct": 5,
+      "hallucinated": 0,
+      "other": 0,
+      "unverified": 0
+    },
+    "detail": [
+      {
+        "index": 4,
+        "expect": "deny",
+        "outcome": "deny_unverified",
+        "verdict": "correct",
+        "note": "正确否证：明确说明论文只报告 WMT2014 En-De(28.4)/En-Fr(41.0/41.8)，未报告 Zh-En；引 p8 恰当"
+      },
+      {
+        "index": 12,
+        "expect": "deny",
+        "outcome": "deny_unverified",
+        "verdict": "correct",
+        "note": "正确否证：STS 评估全是英文数据集(STS12-16/STSb/SICK-R)，未报告中文 STS 平均 Spearman"
+      },
+      {
+        "index": 20,
+        "expect": "deny",
+        "outcome": "deny_unverified",
+        "verdict": "correct",
+        "note": "正确否证：全文未出现 MMLU，并列出实际涉及的基准(NQ/TriviaQA/WQ/CT/MSMARCO/Jeopardy/FEVER)"
+      },
+      {
+        "index": 21,
+        "expect": "refuse",
+        "outcome": "unfounded_answer",
+        "verdict": "correct",
+        "note": "正确拒答（自然语言，非结构拒答）：说明资料仅含三篇论文、无法找到诺奖得主信息，0 引用"
+      },
+      {
+        "index": 22,
+        "expect": "refuse",
+        "outcome": "unfounded_answer",
+        "verdict": "correct",
+        "note": "正确拒答：明确指出资料中没有 Mamba/状态空间模型内容，且只用资料内的 RNN 优势作答"
+      }
+    ],
+    "stray_verdict_indices": [],
+    "note": "verdict 只来自人工/判官的结论文件；规则本身不升级任何行为正确"
+  },
+  "assertions": [
+    {
+      "name": "answered_without_a_successful_search",
+      "ok": true,
+      "detail": {
+        "rows": [],
+        "of": 19,
+        "note": "deep 模式闸门要求答前有成功 search/read"
+      }
+    },
+    {
+      "name": "rounds_within_max_steps",
+      "ok": true,
+      "detail": {
+        "rows": []
+      }
+    },
+    {
+      "name": "step_budget_exhausted_rows",
+      "ok": false,
+      "detail": {
+        "rows": [
+          7,
+          9,
+          17
+        ],
+        "note": "证据已取到但收尾轮没预留 —— 归类为轨迹问题，不是召回问题"
+      }
+    },
+    {
+      "name": "read_by_page_contract_hole",
+      "ok": false,
+      "detail": {
+        "rows": [
+          9
+        ],
+        "note": "按页 read 不产生 observed chunk，该页证据无法被引用（tools.py::_read）"
+      }
+    },
+    {
+      "name": "failed_tool_calls",
+      "ok": false,
+      "detail": {
+        "rows": [
+          9
+        ],
+        "calls": [
+          "read:document_not_found",
+          "read:document_not_found"
+        ],
+        "note": "失败调用照样消耗步数预算；document_not_found 出现过一次『把文件名当 document_id 传给 read』"
+      }
+    },
+    {
+      "name": "repeated_identical_calls",
+      "ok": false,
+      "detail": {
+        "rows": [
+          17
+        ],
+        "detail": [
+          {
+            "index": 17,
+            "tool": "read",
+            "repeats": 5
+          }
+        ],
+        "note": "同一工具同一参数重复 >= 3 次是退化重试，不是探索"
+      }
+    },
+    {
+      "name": "citations_dropped_as_unobserved",
+      "ok": true,
+      "detail": {
+        "rows": [],
+        "note": "模型引用了本轮未观察到的 chunk —— 幻觉引用的结构化信号"
+      }
+    },
+    {
+      "name": "per_round_timing_recorded",
+      "ok": true,
+      "detail": {
+        "note": "没有轮级时间戳就无法把延迟拆成「轮数 × 每轮耗时」"
+      }
+    }
+  ],
+  "meta": {
+    "harness_version": "agent-eval-2",
+    "chain": "agent",
+    "started_at": "2026-09-16T06:17:41.235827+00:00",
+    "question_files": [
+      "/app/test_data/evaluation_questions.jsonl",
+      "/app/test_data/evaluation_questions_refusal.jsonl"
+    ],
+    "questions": 22,
+    "collection_id": "col_0d83015737fd",
+    "collection_documents": [
+      "attention-is-all-you-need.pdf",
+      "retrieval-augmented-generation.pdf",
+      "sentence-bert.pdf"
+    ],
+    "collection_document_ids": [
+      "3fd5203a-ddca-4cd7-93df-3a78b94ec725",
+      "891f4efe-f5f6-4ba7-9cbd-2c6752d7b404",
+      "bf6285fd-c6a2-48cf-bb10-21603ef97fbf"
+    ],
+    "index": {
+      "index_dir": "/app/data/chroma",
+      "version_id": "20260915T124723-3b594165",
+      "chunk_count": 195,
+      "chunker_version": "ordered-aware-1",
+      "element_schema_version": "ordered_document_v1",
+      "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
+      "embedding_dimension": 1024
+    },
+    "chunk_map_size": 195,
+    "chunk_map_matches_manifest": true,
+    "models": {
+      "agent": "deepseek-v4-pro-0813",
+      "router": "deepseek-v4-pro-0813",
+      "summarizer": "deepseek-v4-pro-0813"
+    },
+    "settings": {
+      "AGENT_MAX_STEPS": 6,
+      "AGENT_MAX_GATE_BLOCKS": 2,
+      "AGENT_ROUTE_MODE": "auto",
+      "tool_max_hits": 5,
+      "tool_text_chars": 1200,
+      "RETRIEVAL_MIN_SCORE": 0.45,
+      "RETRIEVAL_FINAL_K": 5,
+      "RERANK_ENABLED": true,
+      "RERANK_MODEL": "/app/data/models/modelscope/models/BAAI--bge-reranker-v2-m3/snapshots/master",
+      "HF_HUB_OFFLINE": "1",
+      "EMBEDDING_MODEL": "Qwen/Qwen3-Embedding-0.6B"
+    },
+    "http_check": {
+      "skipped": true
+    },
+    "audit_verdicts_file": "eval/baselines/agent_eval_20260916.verdicts.json"
+  },
+  "selection": {
+    "indices_run_now": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22
+    ],
+    "only": "",
+    "limit": 0,
+    "rows_in_file": 22,
+    "note": "summary 聚合的是 --out 里的全部行，不是本次新跑的行"
+  }
+}

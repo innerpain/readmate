@@ -1,0 +1,217 @@
+{
+  "harness_version": "agent-eval-2",
+  "chain": "agent",
+  "total": 20,
+  "transport_errors": 0,
+  "outcome_counts": {
+    "ok": 13,
+    "adjacent_page": 1,
+    "budget_exhausted": 3,
+    "deny_unverified": 3
+  },
+  "recompute_ok": true,
+  "recompute_note": "outcome_counts 一律由明细重算；row.outcome 只用于交叉校验",
+  "answerable": {
+    "n": 17,
+    "answered": 14,
+    "citation_hit_all": {
+      "n": 13,
+      "of": 17,
+      "denom": "expect=answer"
+    },
+    "citation_hit_answered": {
+      "n": 13,
+      "of": 14,
+      "denom": "expect=answer 且本轮作答"
+    },
+    "budget_exhausted": {
+      "n": 3,
+      "of": 17,
+      "denom": "expect=answer"
+    },
+    "gate_failed": {
+      "n": 0,
+      "of": 17,
+      "denom": "expect=answer"
+    }
+  },
+  "numbers": {
+    "coverage_ge_half": {
+      "n": 9,
+      "of": 12,
+      "denom": "expect=answer 且参考答案含数字"
+    },
+    "rows_without_numbers": {
+      "n": 5,
+      "rows": [
+        2,
+        6,
+        13,
+        15,
+        16
+      ],
+      "note": "旧口径把它们按 coverage=1.0 计入，于是 14 看起来大于 12 —— 分母必须写明"
+    }
+  },
+  "expect_deny": {
+    "n": 3,
+    "refuse_correct": 0,
+    "deny_unverified": 3,
+    "note": "规则无法区分「正确否证」与「幻觉式否证」，这些行进入 audit，不计为正确"
+  },
+  "expect_refuse": {
+    "n": 0,
+    "refuse_correct": 0,
+    "unfounded_answer": 0
+  },
+  "citations": {
+    "dropped_rows": 0,
+    "page_fidelity_mismatch_rows": 0
+  },
+  "latency_s": {
+    "mean": 70.33,
+    "p95": 78.73,
+    "min": 55.74,
+    "max": 95.14
+  },
+  "trajectory": {
+    "rounds_mean": 0.0,
+    "rounds_max": 0,
+    "tool_calls_mean": 3.3,
+    "tool_calls_max": 9,
+    "route_tracks_search_only": {
+      "direct": 36,
+      "planned": 6
+    },
+    "note": "工具调用数 ≠ 轮数：一轮可以并行多个调用；None 轨来自非 search 步，不计入"
+  },
+  "audit": {
+    "rows": [
+      4,
+      12,
+      20
+    ],
+    "count": 3,
+    "verdicts": {
+      "correct": 3,
+      "hallucinated": 0,
+      "other": 0,
+      "unverified": 0
+    },
+    "detail": [
+      {
+        "index": 4,
+        "expect": "deny",
+        "outcome": "deny_unverified",
+        "verdict": "correct",
+        "note": "正确否证：明确说论文只报告 En-De/En-Fr，未报告 Zh-En 的 BLEU"
+      },
+      {
+        "index": 12,
+        "expect": "deny",
+        "outcome": "deny_unverified",
+        "verdict": "correct",
+        "note": "正确否证：STS 评估均为英文数据集，未报告中文 STS 平均 Spearman"
+      },
+      {
+        "index": 20,
+        "expect": "deny",
+        "outcome": "deny_unverified",
+        "verdict": "correct",
+        "note": "正确否证：全文未出现 MMLU，并列出实际涉及的基准"
+      }
+    ],
+    "stray_verdict_indices": [],
+    "note": "verdict 只来自人工/判官的结论文件；规则本身不升级任何行为正确"
+  },
+  "assertions": [
+    {
+      "name": "answered_without_a_successful_search",
+      "ok": true,
+      "detail": {
+        "rows": [],
+        "of": 17,
+        "note": "deep 模式闸门要求答前有成功 search/read"
+      }
+    },
+    {
+      "name": "rounds_within_max_steps",
+      "ok": true,
+      "detail": {
+        "rows": []
+      }
+    },
+    {
+      "name": "step_budget_exhausted_rows",
+      "ok": false,
+      "detail": {
+        "rows": [
+          7,
+          9,
+          17
+        ],
+        "note": "证据已取到但收尾轮没预留 —— 归类为轨迹问题，不是召回问题"
+      }
+    },
+    {
+      "name": "read_by_page_contract_hole",
+      "ok": true,
+      "detail": {
+        "rows": [],
+        "note": "按页 read 不产生 observed chunk，该页证据无法被引用（tools.py::_read）"
+      }
+    },
+    {
+      "name": "failed_tool_calls",
+      "ok": false,
+      "detail": {
+        "rows": [
+          9,
+          17
+        ],
+        "calls": [
+          "read:None",
+          "read:None",
+          "read:None"
+        ],
+        "note": "失败调用照样消耗步数预算；document_not_found 出现过一次『把文件名当 document_id 传给 read』"
+      }
+    },
+    {
+      "name": "repeated_identical_calls",
+      "ok": true,
+      "detail": {
+        "rows": [],
+        "detail": [],
+        "note": "同一工具同一参数重复 >= 3 次是退化重试，不是探索"
+      }
+    },
+    {
+      "name": "citations_dropped_as_unobserved",
+      "ok": true,
+      "detail": {
+        "rows": [],
+        "note": "模型引用了本轮未观察到的 chunk —— 幻觉引用的结构化信号"
+      }
+    },
+    {
+      "name": "per_round_timing_recorded",
+      "ok": false,
+      "detail": {
+        "note": "没有轮级时间戳就无法把延迟拆成「轮数 × 每轮耗时」"
+      }
+    }
+  ],
+  "meta": {
+    "harness_version": "agent-eval-2",
+    "chain": "agent",
+    "rows_source": "tmp/agent_eval_20.jsonl",
+    "relabeled": true,
+    "missing_by_construction": [
+      "rounds / per-round timing",
+      "dropped_citations",
+      "citation page_fidelity"
+    ],
+    "note": "旧 harness 采集，按现行口径重标；真基线需用 eval.agent_eval 重跑一次"
+  }
+}

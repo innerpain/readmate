@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# pre-push hook for ReadMate (D47). Installed MANUALLY - this file is a template,
+# the repo never edits your git config on its own.
+#
+# DECISION (2026-09-20, user): keep this MANUAL -- do not install it as a hook.
+# The gate runs only when someone types `bash scripts/ci.sh`.  Recorded here so a
+# later session does not read the absence of `.git/hooks/pre-push` as an oversight
+# and re-propose installing it.
+#
+# Install:
+#   cp scripts/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+# or version the hook in-repo:
+#   git config core.hooksPath .githooks   # then also copy this to .githooks/pre-push
+#
+# Bypass for one push:  git push --no-verify
+#
+# Exits non-zero to abort the push. No secrets in this file.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+# Allow skipping heavy checks when only docs changed.
+if [ "${SKIP_CI:-0}" = "1" ]; then
+  echo "pre-push: SKIP_CI=1 -> skipping scripts/ci.sh" >&2
+  exit 0
+fi
+
+echo "pre-push: running scripts/ci.sh (git push --no-verify to bypass)" >&2
+bash scripts/ci.sh

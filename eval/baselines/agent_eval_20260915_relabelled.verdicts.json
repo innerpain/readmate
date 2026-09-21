@@ -1,0 +1,19 @@
+{
+  "reviewed_by": "manual read of the archived answers of tmp/agent_eval_20.jsonl (the 2026-09-15 run)",
+  "reviewed_at": "2026-09-16",
+  "note": "这三题（论文是否报告 X）在 9-15 与 9-16 两次运行里都给的是正确否证；此处记录同一结论，避免快照里三行永远停在 unverified。",
+  "verdicts": {
+    "4": {
+      "verdict": "correct",
+      "note": "正确否证：明确说论文只报告 En-De/En-Fr，未报告 Zh-En 的 BLEU"
+    },
+    "12": {
+      "verdict": "correct",
+      "note": "正确否证：STS 评估均为英文数据集，未报告中文 STS 平均 Spearman"
+    },
+    "20": {
+      "verdict": "correct",
+      "note": "正确否证：全文未出现 MMLU，并列出实际涉及的基准"
+    }
+  }
+}

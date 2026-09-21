@@ -1,0 +1,12 @@
+chromadb==1.0.20
+celery==5.4.0
+redis==5.1.0
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.13.5
+openai==1.63.2
+numpy==1.26.4
+sentence_transformers==5.6.1
+Pillow==11.3.0
+docling==2.126.0

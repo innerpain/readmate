@@ -1,0 +1,119 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: document-qa-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: document-qa-assistant-api:latest
+    container_name: document-qa-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # nvidia-* pip wheels ship cuDNN/cuBLAS under site-packages; ORT CUDA EP needs them on LD path.
+      LD_LIBRARY_PATH: /usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.12/site-packages/nvidia/curand/lib:/usr/local/lib/python3.12/site-packages/nvidia/cufft/lib:/usr/local/lib/python3.12/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.12/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.12/site-packages/nvidia/nvjitlink/lib
+      # Docling/layout weights need a first online fetch unless the HF cache is warm.
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      API_KEY: ${API_KEY:-}
+      BASE_URL: ${BASE_URL:-}
+      MODEL: ${MODEL:-}
+      # D48: behavior params (TEMPERATURE / MAX_TOKENS / EMBEDDING_* /
+      # NORMALIZE_EMBEDDINGS / RETRIEVAL_TOP_K / RETRIEVAL_MIN_SCORE /
+      # RERANK_ENABLED / RERANK_MODEL / RERANK_MAX_LENGTH / DOCLING_DO_OCR) were
+      # REMOVED here. `VAR: ${VAR:-X}` always materializes the variable, so any
+      # code default in src/config/settings.py was silently shadowed - changing
+      # a default (e.g. D29 min_score recalibration) had no effect until compose
+      # was edited too. Code defaults win now; override via .env when needed.
+      # DELIBERATELY KEPT (compose default != code default):
+      #   EMBEDDING_MODEL          code DEFAULT_EMBEDDING_MODEL == this value, but
+      #                            .env/.env.example set it explicitly -> keep in sync
+      #   EMBEDDING_QUERY_INSTRUCTION  compose default is "" (disables the prefix);
+      #                            code default is DEFAULT_QUERY_INSTRUCTION (enables it)
+      #   EMBEDDING_BATCH_SIZE     compose 8 vs code DEFAULT_EMBEDDING_BATCH_SIZE 32
+    ports:
+      # D40: bind loopback only. 30+ routes (incl. DELETE/PATCH) have no auth;
+      # 0.0.0.0 exposed them to anyone on the same LAN/hotspot. Use
+      # 127.0.0.1:8000:8000 (LAN access deliberately dropped; add token auth first).
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./frontend/dist:/app/frontend/dist
+      # D49: HF cache is host-side and user-specific; parameterize it.
+      - ${HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
+    depends_on:
+      redis:
+        condition: service_healthy
+    gpus: all
+    # Image history once baked Celery as CMD; keep API on uvicorn explicitly.
+    command: ["python", "-m", "uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    # D50: /health is cheap enough at 30s; start_period covers uvicorn boot.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: document-qa-assistant-worker:latest
+    container_name: document-qa-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      LD_LIBRARY_PATH: /usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.12/site-packages/nvidia/curand/lib:/usr/local/lib/python3.12/site-packages/nvidia/cufft/lib:/usr/local/lib/python3.12/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.12/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.12/site-packages/nvidia/nvjitlink/lib
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      # EMBEDDING_BATCH_SIZE kept: compose 8 vs code DEFAULT_EMBEDDING_BATCH_SIZE 32
+      # (VRAM guard - see src/retrieval/embedding_generator.py:65). See the api
+      # service D48 note for the full keep/remove rationale.
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-8}
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      API_KEY: ${API_KEY:-}
+      BASE_URL: ${BASE_URL:-}
+      MODEL: ${MODEL:-}
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      # D49: same parameterized HF cache as api.
+      - ${HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
+    depends_on:
+      redis:
+        condition: service_healthy
+    gpus: all
+    command: ["python", "-m", "celery", "-A", "src.tasks.celery_app:celery_app", "worker", "--loglevel=INFO", "--pool=solo"]
+    # D50: lightweight liveness only (no task/queue inspection - those cost a
+    # broker round-trip). `celery inspect ping` was rejected: with --pool=solo a
+    # parse task can hold the only worker slot for minutes, so a ping-based
+    # healthcheck would flap and could park the container in `unhealthy`
+    # mid-ingestion. Redis reachability + a live process is the right signal here.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis, os; redis.Redis.from_url(os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0'), socket_timeout=3).ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  redis_data:

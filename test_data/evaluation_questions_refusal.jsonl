@@ -1,0 +1,3 @@
+{"question": "根据我的资料，2024 年诺贝尔物理学奖得主是谁？", "answerable": false, "expect": "refuse", "reference_answer": "", "expected_documents": [], "expected_pages": [], "query_lang": "zh", "doc_lang": "unrelated"}
+{"question": "根据我的资料，Transformer 相比 Mamba 状态空间模型在长文本建模上有哪些优势？", "answerable": false, "expect": "refuse", "reference_answer": "", "expected_documents": [], "expected_pages": [], "query_lang": "zh", "doc_lang": "unrelated"}
+{"question": "根据我的资料，苹果公司 2025 财年第二季度营收与净利润分别是多少？", "answerable": false, "expect": "refuse", "reference_answer": "", "expected_documents": [], "expected_pages": [], "query_lang": "zh", "doc_lang": "unrelated"}

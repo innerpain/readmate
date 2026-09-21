@@ -1,0 +1,27 @@
+{
+  "reviewed_by": "manual read of the archived answers of eval/baselines/agent_eval_20260916.jsonl",
+  "reviewed_at": "2026-09-16",
+  "note": "规则只能把这几行标成『需要判定』；这里记录人工核对后的结论，避免它们永远是 unverified。",
+  "verdicts": {
+    "4": {
+      "verdict": "correct",
+      "note": "正确否证：明确说明论文只报告 WMT2014 En-De(28.4)/En-Fr(41.0/41.8)，未报告 Zh-En；引 p8 恰当"
+    },
+    "12": {
+      "verdict": "correct",
+      "note": "正确否证：STS 评估全是英文数据集(STS12-16/STSb/SICK-R)，未报告中文 STS 平均 Spearman"
+    },
+    "20": {
+      "verdict": "correct",
+      "note": "正确否证：全文未出现 MMLU，并列出实际涉及的基准(NQ/TriviaQA/WQ/CT/MSMARCO/Jeopardy/FEVER)"
+    },
+    "21": {
+      "verdict": "correct",
+      "note": "正确拒答（自然语言，非结构拒答）：说明资料仅含三篇论文、无法找到诺奖得主信息，0 引用"
+    },
+    "22": {
+      "verdict": "correct",
+      "note": "正确拒答：明确指出资料中没有 Mamba/状态空间模型内容，且只用资料内的 RNN 优势作答"
+    }
+  }
+}

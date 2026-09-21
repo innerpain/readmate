@@ -1,0 +1,42 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.vscode/
+data/
+# F3: scratch evidence, probe scripts and one-off logs.  Kept on disk on
+# purpose (the records cite them) but never committed.
+tmp/
+# frontend build output: FastAPI serves it from the mounted dist/ in production.
+frontend/dist/
+node_modules/
+
+# 本机 agent 工具目录（不进仓库）
+.zcode/
+.v2c/
+.hermes/
+# 内部工作文档（不公开）
+AGENTS.md
+MEMORY.md
+问题.md
+docs/问题台账.md
+二改完整修改方案.md
+.collab/
+
+# pip 下载残留
+*.whl
+
+# 文档类不公开（只保留 README）：用户口径 2026-09-21「除了 readme 其他文档类全都不上传」
+docs/
+readmate/
+*.md
+!README.md
+!**/README.md
+
+# eval 运行残留（工作库/审计输出）
+*.work/
+
+# 样例论文 PDF 不随仓库分发（第三方版权）；获取方式见 test_data/README.md
+test_data/pdfs/
