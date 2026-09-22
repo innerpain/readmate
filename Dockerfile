@@ -39,7 +39,6 @@ ENV HF_HOME=/root/.cache/huggingface
 # available on Windows: the drive has no POSIX ownership to change.  Enabling non-root
 # therefore needs an entrypoint that fixes ownership as root and then drops privileges
 # (gosu/setpriv); until that exists, running as root is the working configuration.
-# See docs/问题台账.md D50b for the evidence and the options.
 RUN groupadd -g 1000 appuser \
  && useradd -m -u 1000 -g 1000 -s /bin/bash appuser \
  && mkdir -p /app/data \
