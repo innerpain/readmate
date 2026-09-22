@@ -22,6 +22,9 @@
 cp .env.example .env    # Windows: copy .env.example .env
 # 填 API_KEY / BASE_URL / MODEL（OpenAI 兼容端点，只收本轮 Context）
 
+# 首次必须：仓库不含前端构建产物，界面由 FastAPI 托管 frontend/dist/
+cd frontend && npm install && npm run build && cd ..
+
 docker compose build    # 首次构建为「数十分钟级」；此后增量重建
 docker compose up -d
 docker compose ps
@@ -38,7 +41,7 @@ curl http://127.0.0.1:8000/health
 
 权重与离线：Embedding（Qwen3-Embedding-0.6B）、Docling 版面/OCR、reranker（bge-reranker-v2-m3）首次需联网拉取；宿主机 HF 缓存已挂载进容器，暖缓存后可设 `HF_HUB_OFFLINE=1`。挂载路径已参数化（D49）：默认 `${HOME}/.cache/huggingface`，缓存不在默认位置时在 `.env` 设 `HF_CACHE_DIR`（Windows 用正斜杠，如 `HF_CACHE_DIR=D:/hf-cache`），不再写死用户名。reranker 默认走本地快照 `data/models/modelscope/models/BAAI--bge-reranker-v2-m3/snapshots/master`。
 
-前端开发（可选）：`cd frontend && npm install && npm run dev` —— Vite dev proxy 把 `/agent` `/documents` `/indexes` `/tasks` `/health` 转发到 `:8000`。生产构建 `npm run build`（= `tsc --noEmit && vite build`）产出 `frontend/dist/`，由 FastAPI 托管，compose 已挂载该目录。
+前端（**首次使用必须构建一次**，否则界面打不开 —— 仓库不含 `dist/` 构建产物）：`cd frontend && npm install && npm run build`（= `tsc --noEmit && vite build`），产出 `frontend/dist/`，由 FastAPI 托管，compose 已挂载该目录。开发模式（可选）：`npm run dev` —— Vite dev proxy 把 `/agent` `/documents` `/indexes` `/tasks` `/health` 转发到 `:8000`。
 
 ## 架构
 
