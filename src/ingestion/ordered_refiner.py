@@ -10,9 +10,6 @@ from typing import Any
 # Same estimator the chunker uses for its pack ceilings: keeping one definition of
 # "a token" inside the ingestion layer matters more than avoiding the import.
 from src.ingestion.ordered_chunker import estimate_tokens, take_within_budget
-# D62: the prefix chain borrows the very predicate the ``§N`` section rule uses --
-# one definition of "top-level heading" per document, so the two cannot disagree.
-from src.ingestion.page_map import top_heading_predicate
 
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\s+(\S.*)$")
 APPENDIX_HEADING = re.compile(r"^(Appendix\s+[A-Z]|[A-Z])\s+(\S.*)$", re.I)
@@ -39,47 +36,74 @@ def _numbered_depth(text: str) -> tuple[int, str] | None:
 
 
 def deepen_heading_paths(
-    elements: list[dict[str, Any]], *, reset_on_unnumbered_top: bool = False
+    elements: list[dict[str, Any]], *, use_heading_levels: bool = False
 ) -> list[list[str]]:
     """The heading prefix of every element (the path *without* itself).
 
-    ``reset_on_unnumbered_top`` (D62, non-PDF formats): an unnumbered heading
-    that is a *top-level* heading for this document starts a new chain instead of
-    nesting inside the previous one.  Measured before the fix
-    (``tmp/fmt-probe/probe_heading_nesting.py``): two DOCX chapters came out as
-    ``Chapter One > Chapter Two``, two slides as ``Slide one > Slide two``, two
-    worksheets as ``Sales-Q3 > Notes-EU`` -- while ``section`` (the ``§N`` rule,
-    same predicate) already called each of them its own section.  A genuine
-    sub-heading (shallower level, or a numbered one) still nests, and the reset
-    pushes depth 1 so a following numbered child keeps the new top as its parent.
+    Two ranks are available and they are used in this order:
 
-    PDFs deliberately keep the conservative rule: Docling hands *every* PDF
-    heading ``level=1`` and no ``title``, so the predicate degenerates to
-    "all headings are top" there.  Measured (``tmp/fmt-probe/probe_d62_drift.py``)
-    that would rewrite 52 of the 275 shipped chunk rows -- the PDF zero-drift
-    guard forbids it, and the PDF ``§N``/``section`` field is already correct.
+    * an explicit number in the heading text (``3.1``) -- the author's own rank,
+      format-independent, so it wins when present (PDFs live on this);
+    * ``use_heading_levels`` (D62 + D64, non-PDF formats): the rank Docling
+      reports on the element.  A unnumbered heading at rank N pops every ancestor
+      whose rank is >= N, so equal ranks become **siblings** instead of a chain.
+
+    Why the flag exists: Docling reports ``level`` for every format, but for PDFs
+    that level is *always* 1 (measured), i.e. it carries no structure at all --
+    running the ranked rule there would flatten the shipped corpus (52 of 275
+    chunk rows, ``tmp/fmt-probe/probe_d62_drift.py``), which the PDF zero-drift
+    guard forbids.  So PDFs keep the old conservative rule, and a heading that
+    carries neither a number nor a level is still pushed as a child (no signal,
+    no guess).
+
+    The two rank scales are **not** interchangeable, so each document picks one:
+    mixing them broke a real DOCX (a ``1.1`` sub-section scored depth 2 while its
+    parent chapter scored level 4, so the parent was popped away).  When the
+    document's levels actually differ they are the better scale (they are the
+    layout's own hierarchy); when every heading shares one level the numbers, if
+    any, are the only hierarchy left.
+
+    Measured effect on the formats with real levels
+    (``tmp/fmt-probe/probe_heading_nesting.py``, ``tmp/fmt-real/probe_levels.py``):
+
+    * DOCX two chapters -> ``Chapter Two`` (was ``Chapter One > Chapter Two``);
+    * a titled DOCX (title L1 / wrapper L3 / chapters L4) -> the chain stops at the
+      wrapper instead of stacking up to 17 levels;
+    * PPTX slides and XLSX worksheets -> one root per container;
+    * HTML h1/h2/h3 -> the real hierarchy (h2 sibling of h2, h3 under its h2);
+    * Markdown (every heading at level 1 -- ``#`` and ``##`` are indistinguishable)
+      -> each heading is its own root: flat, but never a 29-level chain.
     """
 
-    is_top = top_heading_predicate(elements) if reset_on_unnumbered_top else None
+    headings = [el for el in elements if el.get("type") == "heading"]
+    levels = {el.get("level") for el in headings if isinstance(el.get("level"), int)}
+    levels_rank = use_heading_levels and len(levels) > 1
+
     stack: list[tuple[int, str]] = []
     paths: list[list[str]] = []
     for el in elements:
         text = (el.get("text") or "").strip()
         if el.get("type") == "heading":
             numbered = _numbered_depth(text)
-            if numbered:
-                depth, title = numbered
-                while stack and stack[-1][0] >= depth:
-                    stack.pop()
-                stack.append((depth, title))
-                paths.append([t for _, t in stack[:-1]])
-            elif is_top is not None and is_top(el):
-                stack = [(1, text)]
-                paths.append([])
+            level = el.get("level") if isinstance(el.get("level"), int) and el.get("level") >= 1 else None
+            rank: int | None
+            if use_heading_levels and level is not None and (levels_rank or numbered is None):
+                rank = int(level)
+            elif numbered:
+                rank = numbered[0]
+            elif use_heading_levels and level is not None:
+                rank = int(level)
             else:
+                rank = None
+            if rank is None:
                 paths.append([t for _, t in stack])
                 # Conservative: treat unnumbered heading as child title without popping.
                 stack.append((stack[-1][0] + 1 if stack else 1, text))
+            else:
+                while stack and stack[-1][0] >= rank:
+                    stack.pop()
+                stack.append((rank, text))
+                paths.append([t for _, t in stack[:-1]])
         else:
             paths.append([t for _, t in stack])
     return paths
@@ -245,14 +269,15 @@ def refine_rag_document(
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     elements = list(rag.get("elements") or [])
-    # D62: every format except PDF lets a top-level unnumbered heading start a new
-    # prefix chain (DOCX chapters / PPTX slides / XLSX worksheets used to nest).
-    # PDF is excluded on measurement, not on principle -- see
-    # ``deepen_heading_paths``.  A rag document without ``file_type`` is a legacy
-    # PDF artifact and keeps the old behaviour.
+    # D62 + D64: every format except PDF ranks headings by their own level, so an
+    # unnumbered heading becomes a sibling of the previous one at the same rank
+    # instead of nesting inside it (DOCX chapters / PPTX slides / XLSX worksheets
+    # used to chain; a titled document chained up to 17 levels).  PDF is excluded
+    # on measurement, not on principle -- see ``deepen_heading_paths``.  A rag
+    # document without ``file_type`` is a legacy PDF artifact: old behaviour.
     file_type = str(rag.get("file_type") or ".pdf").lower()
     norm_paths = deepen_heading_paths(
-        elements, reset_on_unnumbered_top=file_type != ".pdf"
+        elements, use_heading_levels=file_type != ".pdf"
     )
 
     seen_abstract = False

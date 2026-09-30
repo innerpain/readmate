@@ -377,3 +377,76 @@ def test_spreadsheet_sheet_anchors_are_siblings(tmp_path: Path):
     norms = _norms(ordered)
     assert norms["e0003"] == []            # was ["Sales-Q3"] before D62
     assert norms["e0004"] == ["Notes-EU"]  # was ["Sales-Q3", "Notes-EU"]
+
+
+def test_titled_document_chapters_stop_chaining_at_the_wrapper(tmp_path: Path):
+    """D64 (measured on real files, ``tmp/fmt-real/probe_levels.py``): a real DOCX
+    carries a title (L1) plus a section wrapper (L3) and then its chapters (L4).
+    Before this fix every chapter nested inside the previous one -- up to 17
+    levels of prefix on the shipped document."""
+
+    rag = _rag(
+        [
+            _heading("e0000", "方案标题", level=1, source_label="title"),
+            _heading("e0001", "章节包装", level=3),
+            _heading("e0002", "0. 目标与总原则", level=4),
+            _paragraph("e0003", "Body of the first chapter."),
+            _heading("e0004", "1. 实测依据", level=4, page=2),
+            _paragraph("e0005", "Body of the second chapter."),
+            _heading("e0006", "1.1 子节", level=5, page=2),
+            _paragraph("e0007", "Body of the sub-section."),
+        ],
+        file_type=".docx",
+    )
+    ordered = refine_rag_document(rag, output_dir=tmp_path, copy_figures=False)
+    norms = _norms(ordered)
+    assert norms["e0003"] == ["方案标题", "章节包装", "0. 目标与总原则"]
+    # the point of D64: the body of chapter 1 is not nested inside chapter 0
+    assert norms["e0005"] == ["方案标题", "章节包装", "1. 实测依据"]
+    assert norms["e0007"] == ["方案标题", "章节包装", "1. 实测依据", "1.1 子节"]
+    assert max(len(p) for p in norms.values()) <= 4, norms
+
+
+def test_headings_sharing_one_level_flatten_instead_of_chaining(tmp_path: Path):
+    """Markdown hands ``#`` and ``##`` the same level (measured): the rank carries
+    no hierarchy, so each heading is its own root -- flat, but never the 29-level
+    chain the shipped Markdown/HTML documents used to produce."""
+
+    rag = _rag(
+        [
+            _heading("e0000", "文档标题", level=1, source_label="title"),
+            _heading("e0001", "A 节", level=1),
+            _paragraph("e0002", "Body of A."),
+            _heading("e0003", "B 节", level=1, page=2),
+            _paragraph("e0004", "Body of B."),
+        ],
+        file_type=".md",
+    )
+    ordered = refine_rag_document(rag, output_dir=tmp_path, copy_figures=False)
+    norms = _norms(ordered)
+    assert norms["e0002"] == ["A 节"]
+    assert norms["e0004"] == ["B 节"]
+
+
+def test_numbers_rank_when_the_levels_do_not_discriminate(tmp_path: Path):
+    """The two rank scales are not interchangeable: when every heading shares one
+    level (Markdown), the author's numbering is the only hierarchy left -- and
+    a plain ``1 Introduction`` must still become the parent of ``1.1 Methods``
+    without swallowing the next chapter."""
+
+    rag = _rag(
+        [
+            _heading("e0001", "1 Introduction", level=1),
+            _paragraph("e0002", "Intro body."),
+            _heading("e0003", "1.1 Methods", level=1),
+            _paragraph("e0004", "Methods body."),
+            _heading("e0005", "2 Results", level=1),
+            _paragraph("e0006", "Results body."),
+        ],
+        file_type=".md",
+    )
+    ordered = refine_rag_document(rag, output_dir=tmp_path, copy_figures=False)
+    norms = _norms(ordered)
+    assert norms["e0002"] == ["1 Introduction"]
+    assert norms["e0004"] == ["1 Introduction", "1.1 Methods"]
+    assert norms["e0006"] == ["2 Results"]
