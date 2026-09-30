@@ -161,3 +161,31 @@ def test_front_matter_author_summary_is_now_kept_too():
         {"chunk_type": "table_summary", "heading_path": ["Attention Is All You Need"]},
         allow_tables=False,
     )
+
+
+def test_naming_a_spreadsheet_is_a_table_request():
+    """D66 (b): a CSV is nothing but a table, so asking about it must open the
+    gate -- otherwise the document is unreachable from its own question."""
+
+    assert query_wants_tables("hard-eval-set.csv 里 expect 为 deny 的题目一共有几道？") is True
+    assert query_wants_tables("corpus-stats.xlsx 的 eval-summary 表里 bucket=deny 有多少？") is True
+    assert query_wants_tables("看一下那个 .tsv") is True
+    # a plain prose question must NOT start hauling in result tables
+    assert query_wants_tables("Transformer 的编码器由什么结构组成？") is False
+    assert query_wants_tables("第 6 节讲了什么做法？") is False
+
+
+def test_diversify_can_be_told_tables_are_wanted():
+    """D66 (c): the second pass the retriever runs when a closed gate emptied the
+    window -- same hits, tables now allowed."""
+
+    meta = {
+        "pack": {"document_id": "d1", "page": 1, "chunk_type": "table_pack", "table_id": "t1"},
+        "sum": {"document_id": "d1", "page": 1, "chunk_type": "table_summary", "table_id": "t2"},
+    }
+    hits = [_hit("pack"), _hit("sum")]
+    query = "expect 为 deny 的题目一共有几道？"
+
+    assert diversify_hits(hits, meta, final_k=3, query=query) == []          # gate closed
+    rescued = diversify_hits(hits, meta, final_k=3, query=query, allow_tables=True)
+    assert [h.chunk_id for h in rescued] == ["pack", "sum"]                  # tables open

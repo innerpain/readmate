@@ -273,9 +273,25 @@ class PersistentRetriever:
             score_fn=lambda hit: float(best_dense_score(channels, hit.chunk_id) or -1.0),
             score_floor_ratio=settings.score_floor_ratio,
         )
+        # D66 (c): the table gate may demote tables, it may never blank the turn.
+        # A table-only document (a CSV) has no prose to fall back on, so a closed
+        # gate hid it completely -- 0 hits, while its chunk was indexed and
+        # readable.  If the gate removed everything, pick again with tables open;
+        # the cue check stays a preference, not a wall.
+        gate_blanked = not selected and bool(pool)
+        if gate_blanked:
+            selected = diversify_hits(
+                ordered,
+                metadata_by_id,
+                final_k=final_k,
+                query=gate_text,
+                score_fn=lambda hit: float(best_dense_score(channels, hit.chunk_id) or -1.0),
+                score_floor_ratio=settings.score_floor_ratio,
+                allow_tables=True,
+            )
         dense_top = None
         if pool:
-            allow_tables = query_wants_tables(gate_text)
+            allow_tables = True if gate_blanked else query_wants_tables(gate_text)
             ranked_dense = sorted(
                 pool,
                 key=lambda hit: float(best_dense_score(channels, hit.chunk_id) or -1.0),

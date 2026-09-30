@@ -13,9 +13,13 @@ from typing import Any
 # of the safety net.
 _TABLE_METRIC_CUES = re.compile(
     r"(?i)("
-    r"table|bleu|sts|spearman|score|scores|exact\s*match|em|"
+    r"table|bleu|sts|spearman|score|scores|exact\s*match|\bem\b|"
     r"avg\.?|correlation|"
-    r"表|分数|准确率|相关系数|基准|benchmark"
+    r"表|分数|准确率|相关系数|基准|benchmark|"
+    # D66 (b): naming a CSV / spreadsheet IS a table request -- the file is
+    # nothing but a table, so demanding a separate "table word" made a table-only
+    # document unreachable (measured: 0 hits on "hard-eval-set.csv 里 …").
+    r"\.?(csv|tsv|xlsx?|xlsm)\b"
     r")"
 )
 
@@ -114,13 +118,19 @@ def diversify_hits(
     query: str = "",
     score_fn: Callable[[Any], float] | None = None,
     score_floor_ratio: float = 0.82,
+    allow_tables: bool | None = None,
 ) -> list[Any]:
-    """Greedily keep diverse hits; the table gate drops tables the query did not ask for."""
+    """Greedily keep diverse hits; the table gate drops tables the query did not ask for.
+
+    ``allow_tables`` overrides the cue check -- D66 (c) uses it for the second pass
+    after a closed gate emptied the window (a gate may demote tables, never blank
+    the turn).
+    """
 
     if final_k < 1 or not hits:
         return []
 
-    allow_tables = query_wants_tables(query)
+    allow_tables = query_wants_tables(query) if allow_tables is None else bool(allow_tables)
     ranked = list(hits)
     if score_fn is not None and score_floor_ratio > 0:
         ranked = apply_score_floor(ranked, score_fn, ratio=score_floor_ratio)
