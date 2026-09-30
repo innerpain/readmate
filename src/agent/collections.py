@@ -84,6 +84,32 @@ class CollectionService:
             raise AdapterError(COLLECTION_EMPTY, "every document in the selected collections is disabled")
         return union
 
+    def library_document_ids(self) -> set[str]:
+        """Every usable document in the registry (D65).
+
+        An unbound session searches the whole library: the prompt already says
+        ``collections: the whole library`` and the sources panel labels that scope
+        ``（全库）``, so the search tool has to mean the same thing.  Disabled
+        documents stay excluded (FE-2: a disabled document is never searched).
+        """
+
+        disabled = self.disabled_document_ids()
+        return {
+            str(record.document_id)
+            for record in self.registry.list_documents()
+            if str(record.document_id) not in disabled
+        }
+
+    def library_docs(self) -> list[DocInfo]:
+        """``list_docs`` over the whole library -- see ``library_document_ids``."""
+
+        disabled = self.disabled_document_ids()
+        return [
+            _doc_info(record)
+            for record in self.registry.list_documents()
+            if str(record.document_id) not in disabled
+        ]
+
     def list_docs_multi(self, collection_ids: Sequence[str]) -> list[DocInfo]:
         """``list_docs`` over the union of several collections, de-duplicated by
         document_id (R7): the multi-collection system prompt lists every in-scope
@@ -131,7 +157,10 @@ class CollectionService:
         prompt prefix does not drift between turns.
         """
 
-        docs = self.list_docs_multi(collection_ids)
+        # D65: no collection bound = the whole library, which is what the prompt
+        # (``collections: the whole library``) and the sources panel (``（全库）``)
+        # already promise the user.  Disabled documents stay out of scope.
+        docs = self.list_docs_multi(collection_ids) if collection_ids else self.library_docs()
         disabled = self.disabled_document_ids()  # FE-2: declare only usable material
         docs = [doc for doc in docs if doc.document_id not in disabled]
         if not docs:

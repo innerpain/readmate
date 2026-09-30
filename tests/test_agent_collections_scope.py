@@ -143,10 +143,104 @@ def test_tool_search_single_collection_uses_collection_id_resolution(tmp_path):
     assert adapter.last_kwargs["collection_id"] == a
 
 
-def test_tool_search_no_scope_is_collection_empty(tmp_path):
-    adapter = _SpyAdapter(hits=[])
-    runner = ToolRunner(adapter=adapter, collections=_collections(AgentDB(tmp_path / "app.db")), memory=None, settings=AgentSettings())
+class _LibrarySpyAdapter(_SpyAdapter):
+    """Mirrors the real adapter's contract: an empty *resolved* scope is the one
+    thing that still stops a search (``collection_empty``)."""
+
+    def search(self, collection_id, query, **kwargs):
+        if kwargs.get("document_ids") is not None and not kwargs["document_ids"]:
+            raise AdapterError(COLLECTION_EMPTY, "no document in scope")
+        return super().search(collection_id, query, **kwargs)
+
+
+def _record(document_id: str, filename: str, *, enabled: bool = True, page_kind: str = "page"):
+    return SimpleNamespace(
+        document_id=document_id, original_filename=filename, status="ready",
+        page_count=5, chunk_count=9, failure_code=None, page_kind=page_kind, enabled=enabled,
+    )
+
+
+def _library(tmp_path, registry):
+    return CollectionService(db=AgentDB(tmp_path / "app.db"), registry=registry)
+
+
+def _library_registry(*records):
+    return SimpleNamespace(list_documents=lambda: list(records))
+
+
+def test_tool_search_without_scope_searches_whole_library(tmp_path):
+    """D65: an unbound session means the whole library.
+
+    The session prompt already announced ``collections: the whole library`` and the
+    sources panel labels that scope ``（全库）``; the tool used to answer
+    ``collection_empty`` instead, so a user who picked nothing got a refusal for
+    every question (measured: 6/6 refused on real documents).
+    """
+
+    service = _library(tmp_path, _library_registry(_record("d1", "one.pdf"), _record("d2", "two.pdf")))
+    adapter = _LibrarySpyAdapter(hits=[_hit("c1", "d1")])
+    runner = ToolRunner(adapter=adapter, collections=service, memory=None, settings=AgentSettings())
     call = ToolCall(id="1", name="search", arguments={"query": "anything"})
+
     observation = runner._search(call, None, "anything")
+    assert observation.ok
+    assert adapter.last_kwargs["document_ids"] == {"d1", "d2"}  # whole library, not []
+    assert adapter.last_kwargs["collection_id"] == ""  # no representative collection
+
+
+def test_tool_search_without_scope_still_stops_on_empty_library(tmp_path):
+    """Nothing to search is still an error -- it now means an empty *library*."""
+
+    service = _library(tmp_path, _EmptyRegistry())
+    adapter = _LibrarySpyAdapter(hits=[])
+    runner = ToolRunner(adapter=adapter, collections=service, memory=None, settings=AgentSettings())
+    call = ToolCall(id="1", name="search", arguments={"query": "anything"})
+
+    observation = runner.run(call, collection_id=None, session_id=None)
     assert not observation.ok
     assert observation.error_code == COLLECTION_EMPTY
+
+
+def test_library_scope_excludes_disabled_documents(tmp_path):
+    """FE-2 still wins: a document switched off in the library is not searched."""
+
+    service = _library(tmp_path, _library_registry(
+        _record("d1", "one.pdf"), _record("d2", "off.pdf", enabled=False),
+    ))
+    assert service.library_document_ids() == {"d1"}
+    assert [doc.document_id for doc in service.library_docs()] == ["d1"]
+
+
+def test_digest_without_scope_declares_the_whole_library(tmp_path):
+    """D65: the material declaration must match the search scope."""
+
+    service = _library(tmp_path, _library_registry(_record("d1", "one.pdf"), _record("d2", "two.pdf")))
+    digest = service.digest([])
+    assert "one.pdf" in digest and "two.pdf" in digest
+
+
+def test_tool_list_docs_without_scope_lists_the_library(tmp_path):
+    service = _library(tmp_path, _library_registry(_record("d1", "one.pdf"), _record("d2", "two.pdf")))
+    runner = ToolRunner(adapter=_LibrarySpyAdapter(hits=[]), collections=service, memory=None, settings=AgentSettings())
+    call = ToolCall(id="1", name="list_docs", arguments={})
+
+    observation = runner.run(call, collection_id=None, session_id=None)
+    assert observation.ok
+    assert "one.pdf" in observation.content and "two.pdf" in observation.content
+
+
+def test_tool_search_marks_the_insured_dense_top_hit(tmp_path):
+    """D23: the pinned dense-top hit must not read as a ranking result."""
+
+    service = _library(tmp_path, _library_registry(_record("d1", "one.pdf")))
+    adapter = _LibrarySpyAdapter(hits=[_hit("c1", "d1")])
+    adapter.last_signals = {"dense_top_insured": True}
+    runner = ToolRunner(adapter=adapter, collections=service, memory=None, settings=AgentSettings())
+    call = ToolCall(id="1", name="search", arguments={"query": "anything"})
+
+    observation = runner._search(call, None, "anything")
+    assert "insurance rule" in observation.content
+
+    adapter.last_signals = {"dense_top_insured": False}
+    plain = runner._search(call, None, "anything")
+    assert "insurance rule" not in plain.content

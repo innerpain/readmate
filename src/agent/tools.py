@@ -182,7 +182,7 @@ class ToolRunner:
             if call.name == "read":
                 return self._read(call)
             if call.name == "list_docs":
-                return self._list_docs(collection_id)
+                return self._list_docs(collection_id, collection_ids)
             if call.name == "memory_get":
                 return Observation(ok=True, content=self.memory.digest(collection_id))
             if call.name == "memory_note":
@@ -202,10 +202,18 @@ class ToolRunner:
         # A multi-collection turn searches the *union*; a single one keeps the
         # adapter's existing ``collection_id`` resolution.
         scope_ids = [cid for cid in (collection_ids or []) if cid] or ([collection_id] if collection_id else [])
-        if not scope_ids:
-            return Observation(ok=False, content="no collection is bound to this session", error_code="collection_empty")
-        document_ids: set[str] | None = self.collections.document_ids_multi(scope_ids) if len(scope_ids) > 1 else None
-        representative = scope_ids[0]
+        # D65: an unbound session means the **whole library** -- that is what the
+        # session prompt already announces (``collections: the whole library``)
+        # and what the sources panel labels ``（全库）``.  A genuinely empty
+        # library still surfaces as the adapter's ``collection_empty``.
+        if scope_ids:
+            document_ids: set[str] | None = (
+                self.collections.document_ids_multi(scope_ids) if len(scope_ids) > 1 else None
+            )
+            representative = scope_ids[0]
+        else:
+            document_ids = self.collections.library_document_ids()
+            representative = ""
         top_k = call.arguments.get("top_k")
         streak = self._empty_search_streak.get(representative, 0)
         hits = self.adapter.search(
@@ -254,6 +262,16 @@ class ToolRunner:
             )
         route = getattr(self.adapter, "last_route", None)
         route_payload = route.as_dict() if hasattr(route, "as_dict") else None
+        # D23: the retriever pins a dense-top hit in front so reranking cannot drop
+        # it.  The decision always said the model should be told -- otherwise the
+        # pinned row reads as a ranking result.
+        signals = getattr(self.adapter, "last_signals", None) or {}
+        if signals.get("dense_top_insured") and lines:
+            lines.append(
+                "note: one row above is the dense-top hit kept by the retriever's "
+                "insurance rule (so reranking cannot drop it); its position is "
+                "pinned, not ranked."
+            )
         if not lines:
             return Observation(ok=True, content="no hits", hits=[], route=route_payload)
         return Observation(ok=True, content="\n".join(lines), hits=encoded, route=route_payload)
@@ -329,16 +347,22 @@ class ToolRunner:
             hits=hits,
         )
 
-    def _list_docs(self, collection_id: str | None) -> Observation:
-        if not collection_id:
-            return Observation(ok=False, content="no collection bound", error_code="collection_empty")
-        docs = self.collections.list_docs(collection_id)
+    def _list_docs(self, collection_id: str | None, collection_ids: list[str] | None = None) -> Observation:
+        """List the documents in scope; D65: no scope means the whole library."""
+
+        scope_ids = [cid for cid in (collection_ids or []) if cid] or ([collection_id] if collection_id else [])
+        if not scope_ids:
+            docs = self.collections.library_docs()
+        elif len(scope_ids) > 1:
+            docs = self.collections.list_docs_multi(scope_ids)
+        else:
+            docs = self.collections.list_docs(scope_ids[0])
         lines = [
             f"- {doc.filename} status={doc.status} "
             f"{_count_unit(doc.page_kind)}={doc.page_count} chunks={doc.chunk_count}"
             for doc in docs
         ]
-        return Observation(ok=True, content="\n".join(lines) or "collection is empty")
+        return Observation(ok=True, content="\n".join(lines) or "no documents in scope")
 
     def _memory_note(self, call: ToolCall, session_id: str | None, collection_id: str | None = None, explicit_memory: bool = False) -> Observation:
         """``memory_note`` -- pending candidate by default.

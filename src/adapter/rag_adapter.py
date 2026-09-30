@@ -132,6 +132,10 @@ class RagAdapterImpl:
             "rerank_applied": bool(diagnostics.get("rerank_applied")),
             "judge_mismatch": bool(diagnostics.get("judge_mismatch")),
             "route_fallback": bool(getattr(decision, "fallback", False)),
+            # D23: whether the retriever had to pin the best dense hit in front so
+            # reranking could not drop it.  The tool layer says so in the
+            # observation; without this flag the model read it as a ranking result.
+            "dense_top_insured": bool(diagnostics.get("dense_top_insured")),
         }
         return [_to_hit(chunk, self.excerpt_chars) for chunk in chunks if chunk.document_id in scope]
 
