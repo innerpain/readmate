@@ -28,10 +28,10 @@ RUN python -m pip uninstall -y onnxruntime || true \
 # D49: the host HF cache is bind-mounted here (compose: ${HF_CACHE_DIR:-$HOME/.cache/huggingface}).
 ENV HF_HOME=/root/.cache/huggingface
 
-# D50 (2026-09-21): the image prepares a non-root user, but it is NOT activated --
-# measured on this deployment, `USER appuser` breaks the app.  On Docker Desktop for
-# Windows the bind-mounted ./data is presented as root:root, so the existing database
-# is mode 644 and uid 1000 cannot write it:
+# D50 (2026-09-21): the image used to prepare a non-root user, but it was never
+# activated -- measured on this deployment, `USER appuser` breaks the app.  On Docker
+# Desktop for Windows the bind-mounted ./data is presented as root:root, so the existing
+# database is mode 644 and uid 1000 cannot write it:
 #     /app/data            drwxrwxrwx root root   -> uid 1000 CAN create files
 #     /app/data/app.db     -rw-r--r-- root root   -> uid 1000 CANNOT write it
 #     -> sqlite3.OperationalError: attempt to write a readonly database
@@ -39,12 +39,17 @@ ENV HF_HOME=/root/.cache/huggingface
 # available on Windows: the drive has no POSIX ownership to change.  Enabling non-root
 # therefore needs an entrypoint that fixes ownership as root and then drops privileges
 # (gosu/setpriv); until that exists, running as root is the working configuration.
-RUN groupadd -g 1000 appuser \
- && useradd -m -u 1000 -g 1000 -s /bin/bash appuser \
- && mkdir -p /app/data \
- && chown -R 1000:1000 /app/data /root/.cache/huggingface
+#
+# That user-creating layer was deleted on 2026-09-30: nothing ever activated the user
+# (containers measure `uid=0(root)`), `chown` onto the Windows-presented bind mount is a
+# no-op, and the step was NOT idempotent -- BASE_IMAGE is this project's own tag (see the
+# top of this file), so the base already carries `appuser` and `groupadd -g 1000 appuser`
+# exits 9 as soon as any earlier layer changes, i.e. on EVERY rebuild that touches ./src:
+#     groupadd: group 'appuser' already exists -> docker compose build failed
+# If non-root is ever activated, re-add it idempotently (`getent group appuser || ...`)
+# together with that entrypoint.
 
-# USER appuser   # deliberately NOT enabled -- see the block above
+# USER appuser   # not available -- see the block above
 
 EXPOSE 8000
 CMD ["python", "-m", "uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
