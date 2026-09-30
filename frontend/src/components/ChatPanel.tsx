@@ -165,9 +165,9 @@ export default function ChatPanel() {
           : "";
     // Adapter codes: src/adapter/contracts.py
     if (cause instanceof DOMException && cause.name === "AbortError") return "";
-    if (code === "knowledge_base_empty") return "索引尚未入库：请先在左栏完成 PDF 入库后再提问";
+    if (code === "knowledge_base_empty") return "索引尚未入库：请先在左栏完成文档入库后再提问";
     if (code === "embedding_incompatible") return "当前索引与嵌入模型不匹配：需重建索引";
-    if (code === "collection_empty") return "本资料集还没有可用文档：请在左栏添加已入库的 PDF";
+    if (code === "collection_empty") return "本资料集还没有可用文档：请在左栏添加已入库的文档";
     return `请求失败（${cause instanceof Error ? cause.message : "未知错误"}），输入已保留`;
   }
 

@@ -77,7 +77,7 @@ function ChunkPreview({ chunkId, onClose }: { chunkId: string; onClose: () => vo
         title={
           <>
             原文片段
-            {data?.page != null && <span className="ml-2 text-xs font-normal text-gray-500">{pageLabelZh(data.page, data.page_end)}</span>}
+            {data?.page != null && <span className="ml-2 text-xs font-normal text-gray-500">{pageLabelZh(data.page, data.page_end, data.page_kind)}</span>}
             {data?.chunk_type && <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">{data.chunk_type}</span>}
           </>
         }

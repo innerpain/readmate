@@ -1,15 +1,20 @@
-"""Frozen RAG Adapter contract -- ``readmate-rag-adapter-3``.
+"""Frozen RAG Adapter contract -- ``readmate-rag-adapter-4``.
 
 The Agent layer speaks only this vocabulary.  Changing a field name or type
 means publishing a new ``ADAPTER_API_VERSION`` and a matching runtime change,
 because ReadMate validates citations against exactly these fields.
+
+adapter-4 (D61): ``page_kind`` joined ``SearchHit``.  It is *additive* -- the
+field carries a default, so the change does not break a caller that ignores it;
+the version moved because the contract's shape is asserted by tests and the
+frontend labels pages differently per kind (p3 / 幻灯片 3 / 工作表 3 / §2).
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-ADAPTER_API_VERSION = "readmate-rag-adapter-3"
+ADAPTER_API_VERSION = "readmate-rag-adapter-4"
 
 # Stable error codes (readmate/RAG接入Agent方案.md 5.6).
 COLLECTION_EMPTY = "collection_empty"
@@ -58,6 +63,11 @@ class SearchHit(BaseModel):
     # A3: last page this hit covers; None when the passage does not straddle a
     # page break (or when an older snapshot has no span recorded).
     page_end: int | None = Field(default=None, ge=1)
+    # D61: what ``page`` means -- "page" (a physical page), "slide" (a slide
+    # number in a deck), "sheet" (a worksheet number) or "section" (a top-level
+    # heading section, rendered as §N).  Defaults to "page" so every caller that
+    # predates multi-format upload keeps its exact meaning.
+    page_kind: str = "page"
     section: str = ""
     heading_path: list[str] = Field(default_factory=list)
     score: float
@@ -82,6 +92,8 @@ REQUIRED_SEARCH_FIELDS = (
     # 2026-09-20 -- it was in the model but not in this list, so the drift
     # assertion silently did not cover the newest field.
     "page_end",
+    # D61: the page's meaning (page / slide / sheet / section).
+    "page_kind",
     "score",
     "chunk_type",
     "content_kind",
@@ -99,6 +111,8 @@ class ReadResult(BaseModel):
     # A3: last page the read covers (a passage, or a page-read's rows, can span
     # more than one page); None when unknown or identical to ``page``.
     page_end: int | None = Field(default=None, ge=1)
+    # D61: what ``page`` means for the read rows (page / slide / sheet / section).
+    page_kind: str = "page"
     section: str = ""
     text: str = ""
     chunk_type: str | None = None
@@ -136,5 +150,9 @@ class DocInfo(BaseModel):
     filename: str = Field(min_length=1)
     status: str = ""
     page_count: int | None = Field(default=None, ge=0)
+    # D61: what ``page_count`` counts.  Without it a deck or a Word file was
+    # announced as "N pages" to the model, which then cited pages that do not
+    # exist -- the digest is read verbatim into the system prompt.
+    page_kind: str = "page"
     chunk_count: int = Field(default=0, ge=0)
     failure_code: str | None = None

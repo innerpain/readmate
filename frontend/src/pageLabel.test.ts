@@ -31,12 +31,33 @@ describe("pageLabel", () => {
     // 0 is a real (if unusual) page number; only null/undefined mean "unknown".
     expect(pageLabel(0)).toBe("p0");
   });
+
+  it("labels the D61 page kinds instead of pretending they are pages", () => {
+    expect(pageLabel(2, null, "slide")).toBe("slide 2");
+    expect(pageLabel(2, null, "sheet")).toBe("sheet 2");
+    // A section never gets a page span: sections do not straddle each other.
+    expect(pageLabel(2, 3, "section")).toBe("§2");
+  });
+
+  it("keeps the old two-argument call byte-identical", () => {
+    // ``kind`` was added in D61; every pre-multi-format response must be
+    // unaffected -- the byte-for-byte contract the PDF corpus relies on.
+    expect(pageLabel(3, 4)).toBe("p3–4");
+    expect(pageLabel(3, 4, null)).toBe("p3–4");
+    expect(pageLabel(3, 4, "page")).toBe("p3–4");
+  });
 });
 
 describe("pageLabelZh", () => {
   it("renders the Chinese single-page and span forms", () => {
     expect(pageLabelZh(7)).toBe("第 7 页");
     expect(pageLabelZh(7, 9)).toBe("第 7–9 页");
+  });
+
+  it("labels the D61 page kinds in Chinese", () => {
+    expect(pageLabelZh(2, null, "slide")).toBe("第 2 张幻灯片");
+    expect(pageLabelZh(2, null, "sheet")).toBe("第 2 个工作表");
+    expect(pageLabelZh(2, null, "section")).toBe("§2");
   });
 
   it("degrades to the single-page form without a usable pageEnd", () => {

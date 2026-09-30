@@ -31,13 +31,20 @@ class IngestionStage(str, Enum):
 
 
 class DocumentRecord(BaseModel):
-    """Persistent metadata for one uploaded PDF."""
+    """Persistent metadata for one uploaded document."""
 
     document_id: str = Field(min_length=1)
     original_filename: str = Field(min_length=1)
     stored_filename: str = Field(min_length=1)
     revision: str = Field(default="legacy", min_length=1)
     file_size_bytes: int = Field(ge=0)
+    # D61: the source format (lower-case extension including the dot).  Old
+    # registry records predate multi-format upload and were all PDFs, so the
+    # default keeps every existing record correct with no migration.
+    file_type: str = Field(default=".pdf", min_length=1)
+    # D61: what ``page_count`` counts -- a page, a slide, a worksheet, or a
+    # top-level heading section.  Defaults to "page" for the same reason.
+    page_kind: str = Field(default="page", min_length=1)
     status: IngestionStatus = IngestionStatus.QUEUED
     stage: IngestionStage = IngestionStage.QUEUED
     task_id: str | None = None
@@ -65,7 +72,7 @@ class DocumentRecord(BaseModel):
 
 
 class DocumentUploadResponse(BaseModel):
-    """Result returned after accepting a PDF upload."""
+    """Result returned after accepting a document upload."""
 
     document: DocumentRecord
 

@@ -272,7 +272,7 @@ function CitationList() {
           >
             <div className="font-medium text-blue-700">
               [{index + 1}] {label}
-              {citation.page != null ? ` · ${pageLabelZh(citation.page, citation.page_end)}` : ""}
+              {citation.page != null ? ` · ${pageLabelZh(citation.page, citation.page_end, citation.page_kind)}` : ""}
             </div>
             {citation.quote && <div className="mt-1 line-clamp-3 text-gray-600">{citation.quote.slice(0, 160)}</div>}
           </button>

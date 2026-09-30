@@ -64,6 +64,10 @@ def chunk_ordered_document(
     revision = str(ordered.get("revision") or "legacy")
     source_name = filename or str(ordered.get("source_pdf") or document_id)
     sequence = list(ordered.get("sequence") or [])
+    # D61: what a ``page`` number *means* for this document (page / slide / sheet
+    # / section).  Document-level: the whole corpus is one format, and the value
+    # is attached to every chunk after ids are frozen, so no chunk_id moves.
+    page_kind = str(ordered.get("page_kind") or "page")
 
     demoted_byline = 0
     # D17 (2026-09-20): how many elements the policy pass threw away, per role.
@@ -177,6 +181,12 @@ def chunk_ordered_document(
     # Merge structural chunks into reading order by source ordinal / pack order.
     merged = _merge_by_reading_order(chunks, structural_chunks)
     _bind_neighbors(merged, sequence)
+
+    # D61: the page semantics ride onto every chunk.  Done after chunk_id is
+    # frozen (_stable_chunk_id hashes neither this key nor ``page``), so adding
+    # it cannot shift a single existing chunk id.
+    for chunk in merged:
+        chunk["page_kind"] = page_kind
 
     for chunk in merged:
         if estimate_tokens(chunk["retrieval_text"]) > PROSE_MAX_TOKENS + 8:

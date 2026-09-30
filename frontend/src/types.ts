@@ -1,5 +1,7 @@
 // API types mirroring src/models/agent_schemas.py + src/models/schemas.py (F1).
 
+import type { PageKind } from "./pageLabel";
+
 export type IngestionStatus = "queued" | "processing" | "completed" | "failed";
 
 // D8/D11: 解析质量摘要（后端 ``GET /documents/{id}`` 与
@@ -39,6 +41,10 @@ export interface DocumentRecord {
   /** FE-2: retrieval switch.  A disabled document stays in the library but is
    *  excluded from every search path (see CollectionService.document_ids). */
   enabled?: boolean;
+  /** D61: 源文件格式（小写扩展名含点，如 ".pdf"/".docx"）；旧记录缺省按 PDF。 */
+  file_type?: string;
+  /** D61: page_count 的单位（page/slide/sheet/section）；旧记录缺省按 page。 */
+  page_kind?: string;
   created_at?: string;
   updated_at?: string;
   /** D8: 解析降级（表格/公式未能可靠结构化）——true 时显示黄标 + user_notice。 */
@@ -57,6 +63,9 @@ export interface AgentCitation {
   // A3: last page the cited passage covers; equal to `page` (or absent) when it
   // does not straddle a page break.
   page_end?: number | null;
+  // D61: what the number means -- "page" / "slide" / "sheet" / "section".
+  // Absent on responses recorded before multi-format upload, where it is a page.
+  page_kind?: PageKind | null;
   quote: string;
 }
 
@@ -211,12 +220,36 @@ export function parseQualityNotice(doc: QualityFields | null | undefined): Quali
   return null;
 }
 
+/** D61 companion fix: map an ingestion ``failure_code`` to a user sentence.
+ *  Until now the raw code (``empty_document`` …) was rendered verbatim -- the
+ *  same class of gap as the answer ``warnings`` (续修批 WARNING_TEXT).  Unknown
+ *  codes fall back to the code itself + a generic hint, never a bare stack. */
+export function failureText(code?: string | null): string {
+  if (!code) return "入库失败";
+  const map: Record<string, string> = {
+    // These are the values DocumentRecord.failure_code can actually carry
+    // (src/tasks/ingestion.py::_failure_code).  Upload-time codes never reach
+    // this field -- they come back as a 400 detail -- so they are not listed.
+    stored_file_missing: "存储文件丢失：请删除后重新上传",
+    empty_document: "文档没有可入库的内容（空文档或全是图片）",
+    unsupported_or_unreadable: "文件无法读取：编码无法识别或内容已损坏",
+    document_parse_failed: "解析失败：文件可能已损坏或不是有效文档",
+    pdf_parse_failed: "PDF 解析失败：文件可能已损坏",
+    index_build_busy: "索引正被其他任务占用，请稍后重试",
+    embedding_failed: "向量化失败：请稍后重试或查看服务日志",
+    index_publish_failed: "索引发布失败：请稍后重试",
+  };
+  return map[code] ?? `入库失败（${code}）`;
+}
+
 export interface ReadResult {
   document_id: string;
   chunk_id: string | null;
   page: number | null;
   // A3: last page of the read; absent when it stays on one page.
   page_end?: number | null;
+  // D61: what the page number means (see pageLabel).
+  page_kind?: PageKind | null;
   section: string;
   text: string;
   chunk_type: string | null;

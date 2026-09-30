@@ -15,6 +15,43 @@ from src.adapter.contracts import AdapterError
 from src.llm.types import ToolCall
 
 
+def _count_unit(kind: str | None) -> str:
+    """D61: the word for what a document's count counts, for the model's eyes.
+
+    A deck's 12 is slides, not pages -- the listing is read verbatim by the
+    model, and calling a slide count "pages" invites citations to pages that do
+    not exist.
+    """
+
+    return {
+        "slide": "slides",
+        "sheet": "sheets",
+        "section": "sections",
+    }.get(kind or "page", "pages")
+
+
+def _page_label(page: int | None, span: int | None, kind: str | None) -> str:
+    """D61: label a location for the model, honouring what the number means.
+
+    A page number is only a page number when the document has pages.  For the
+    other kinds the label names the container ("slide 2", "sheet 2") or the
+    section marker the UI also uses (``§2``) -- never a bare ``p2`` that would
+    send the reader hunting for a page 2 that does not exist.
+    """
+
+    if page is None:
+        return ""
+    if kind == "slide":
+        return f"slide {page}"
+    if kind == "sheet":
+        return f"sheet {page}"
+    if kind == "section":
+        return f"§{page}"
+    if span is not None and int(span) != int(page):
+        return f"p{page}-{span}"
+    return f"p{page}"
+
+
 @dataclass
 class Observation:
     ok: bool
@@ -52,6 +89,8 @@ READ_TOOL = {
             "document_id must be the UUID of one document (from a search hit or list_docs) -- NOT the "
             "collection id (col_...), and NOT a filename (a bare filename is accepted only as a "
             "last-resort fallback and may be ambiguous). "
+            "Where a location is shown as 'slide 3', 'sheet 2' or '§2' the document has no printed "
+            "pages there: pass that number as page only for a hit whose label says p<page>. "
             "A long passage (a big table, a full page) comes back in windows: when the result ends "
             "with a remaining-chars note, call read again with the same chunk_id/page and the "
             "suggested offset to continue reading where it stopped."
@@ -202,11 +241,14 @@ class ToolRunner:
                     # passage straddles a page break; the model sees the span so
                     # it can cite the page the quote really sits on.
                     "page_end": int(getattr(hit, "page_end", 0) or hit.page),
+                    # D61: what that number means; the model never states it, the
+                    # citation inherits it from the observed chunk.
+                    "page_kind": str(getattr(hit, "page_kind", None) or "page"),
                     "chunk_type": hit.chunk_type,
                 }
             )
             span = getattr(hit, "page_end", 0) or hit.page
-            page_label = f"p{hit.page}" if int(span) == int(hit.page) else f"p{hit.page}-{span}"
+            page_label = _page_label(hit.page, span, getattr(hit, "page_kind", None))
             lines.append(
                 f"- chunk_id={hit.chunk_id} file={hit.filename} {page_label} type={hit.chunk_type}\n{text}"
             )
@@ -259,6 +301,8 @@ class ToolRunner:
             # A3: keep the span on read observations too -- a read is the other
             # path that feeds ``observed_chunks`` and therefore citations.
             "page_end": int(getattr(result, "page_end", 0) or result.page),
+            # D61: and what that page number means.
+            "page_kind": str(getattr(result, "page_kind", None) or "page"),
             "chunk_type": result.chunk_type,
             "text": text,
         }
@@ -289,7 +333,11 @@ class ToolRunner:
         if not collection_id:
             return Observation(ok=False, content="no collection bound", error_code="collection_empty")
         docs = self.collections.list_docs(collection_id)
-        lines = [f"- {doc.filename} status={doc.status} pages={doc.page_count} chunks={doc.chunk_count}" for doc in docs]
+        lines = [
+            f"- {doc.filename} status={doc.status} "
+            f"{_count_unit(doc.page_kind)}={doc.page_count} chunks={doc.chunk_count}"
+            for doc in docs
+        ]
         return Observation(ok=True, content="\n".join(lines) or "collection is empty")
 
     def _memory_note(self, call: ToolCall, session_id: str | None, collection_id: str | None = None, explicit_memory: bool = False) -> Observation:

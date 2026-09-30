@@ -345,6 +345,8 @@ def _to_index_chunk(chunk: dict[str, Any]) -> IndexChunk:
         # A3: the last page this chunk covers (== page when it does not straddle
         # a page break).  Without it a citation could only name the start page.
         "page_end": int(chunk.get("page_end") or chunk.get("page") or 1),
+        # D61: what that number means (page / slide / sheet / section).
+        "page_kind": str(chunk.get("page_kind") or "page"),
         "section": chunk.get("section") or "Unknown",
         "chunk_type": chunk.get("chunk_type"),
         "heading_path": chunk.get("heading_path") or [],

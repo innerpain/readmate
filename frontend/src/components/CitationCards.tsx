@@ -23,7 +23,7 @@ export default function CitationCards({ citations }: { citations: AgentCitation[
             }}
           >
             [{index + 1}] {label}
-            {citation.page != null ? ` · ${pageLabel(citation.page, citation.page_end)}` : ""}
+            {citation.page != null ? ` · ${pageLabel(citation.page, citation.page_end, citation.page_kind)}` : ""}
           </button>
         );
       })}

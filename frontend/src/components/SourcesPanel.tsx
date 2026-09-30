@@ -116,7 +116,7 @@ export default function SourcesPanel() {
       <div className="max-h-64 shrink-0 overflow-y-auto px-2 py-1">
         {collections.isLoading && <div className="px-2 py-1 text-xs text-gray-400">加载中…</div>}
         {(collections.data?.collections ?? []).length === 0 && (
-          <div className="px-2 py-1 text-xs text-gray-400">还没有资料集：到「资料管理」上传 PDF 并新建资料集。</div>
+          <div className="px-2 py-1 text-xs text-gray-400">还没有资料集：到「资料管理」上传文档并新建资料集。</div>
         )}
         {(collections.data?.collections ?? []).map((row) => {
           const checked = collectionIds.includes(row.id);

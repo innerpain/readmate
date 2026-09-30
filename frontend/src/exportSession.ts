@@ -10,6 +10,7 @@
 // makes the export unit-testable without a jsdom/testing-library dependency.
 
 import { api } from "./api";
+import { pageLabel } from "./pageLabel";
 import { restoreTurn } from "./components/ChatPanel";
 import type { MessageRow } from "./types";
 
@@ -42,7 +43,9 @@ export function buildSessionMarkdown(sessionId: string, title: string, rows: Mes
       if (result.citations.length) {
         lines.push("引用：", "");
         result.citations.forEach((citation, index) => {
-          const page = citation.page != null ? ` · p${citation.page}${citation.page_end && citation.page_end !== citation.page ? `–${citation.page_end}` : ""}` : "";
+          // D61: the label follows what the number means (page / slide / sheet /
+          // §section) -- same rule the UI uses, so the export cannot disagree.
+          const page = citation.page != null ? ` · ${pageLabel(citation.page, citation.page_end, citation.page_kind)}` : "";
           lines.push(`${index + 1}. ${citation.filename || citation.document_id.slice(0, 8)}${page}`);
         });
         lines.push("");

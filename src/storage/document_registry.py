@@ -1,4 +1,4 @@
-"""Local registry for uploaded PDF documents."""
+"""Local registry for uploaded documents (D61: PDF + common office/text formats)."""
 
 from __future__ import annotations
 
@@ -15,8 +15,40 @@ from src.models.schemas import DocumentRecord, IngestionStage, IngestionStatus
 
 
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024
-PDF_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
 LOCK_STALE_SECONDS = 30
+
+# D61: the accepted upload formats (docs/Docling多格式支持方案.md §8).  Kept as a
+# frozen mapping of extension -> accepted MIME types; ``application/octet-stream``
+# is accepted for every format because browsers and curl routinely send it, and
+# the real format gate is the extension plus the magic-byte check below.
+ACCEPTED_EXTENSIONS: dict[str, frozenset[str]] = {
+    ".pdf": frozenset({"application/pdf"}),
+    ".docx": frozenset(
+        {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+    ),
+    ".pptx": frozenset(
+        {"application/vnd.openxmlformats-officedocument.presentationml.presentation"}
+    ),
+    ".xlsx": frozenset(
+        {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+    ),
+    ".md": frozenset({"text/markdown", "text/plain"}),
+    ".html": frozenset({"text/html", "text/plain"}),
+    ".htm": frozenset({"text/html", "text/plain"}),
+    # Windows Excel exports arrive as application/vnd.ms-excel far too often.
+    ".csv": frozenset(
+        {"text/csv", "text/plain", "application/vnd.ms-excel", "application/csv"}
+    ),
+}
+_UNIVERSAL_MIME = {"application/octet-stream", ""}
+# OOXML container formats share the ZIP local-file header; PDFs have %PDF-.
+_ZIP_MAGIC = b"PK\x03\x04"
+_MAGIC_BY_EXTENSION: dict[str, bytes] = {
+    ".pdf": b"%PDF-",
+    ".docx": _ZIP_MAGIC,
+    ".pptx": _ZIP_MAGIC,
+    ".xlsx": _ZIP_MAGIC,
+}
 
 
 class DocumentRegistryError(Exception):
@@ -96,21 +128,25 @@ class DocumentRegistry:
         content_type: str | None,
         stream: BinaryIO,
     ) -> DocumentRecord:
-        """Save one PDF; every upload creates a new document identity."""
+        """Save one document; every upload creates a new document identity."""
 
-        safe_filename = self._validate_upload_metadata(filename, content_type)
-        temp_path, file_size = self._write_temp_pdf(stream)
+        safe_filename, file_type = self._validate_upload_metadata(filename, content_type)
+        temp_path, file_size = self._write_temp_file(stream, file_type)
 
         try:
             with self._registry_lock():
                 documents = self._load_documents()
                 document_id = str(uuid4())
-                stored_filename = f"{document_id}.pdf"
+                # The stored name keeps the *original* extension so the parse
+                # stage (and the /file route) can tell the format from disk
+                # alone; ``file_type`` on the record is the authoritative copy.
+                stored_filename = f"{document_id}{file_type}"
                 destination = self.uploads_dir / stored_filename
                 document = DocumentRecord(
                     document_id=document_id,
                     original_filename=safe_filename,
                     stored_filename=stored_filename,
+                    file_type=file_type,
                     revision=str(uuid4()),
                     file_size_bytes=file_size,
                     status=IngestionStatus.QUEUED,
@@ -137,9 +173,15 @@ class DocumentRegistry:
         content_type: str | None,
         stream: BinaryIO,
     ) -> DocumentRecord:
-        """Replace a document PDF while preserving its document_id."""
-        safe_filename = self._validate_upload_metadata(filename, content_type)
-        temp_path, file_size = self._write_temp_pdf(stream)
+        """Replace a document while preserving its document identity.
+
+        D61: a replacement may change the format (pdf -> docx).  The stored file
+        is therefore re-named to the new extension, and the *old* stored file is
+        only deleted once the registry write has succeeded -- a crash between the
+        two leaves an orphan file, never a document whose bytes are gone.
+        """
+        safe_filename, file_type = self._validate_upload_metadata(filename, content_type)
+        temp_path, file_size = self._write_temp_file(stream, file_type)
         try:
             with self._registry_lock():
                 documents = self._load_documents()
@@ -149,12 +191,15 @@ class DocumentRegistry:
                 current = documents[index]
                 if current.status in {IngestionStatus.QUEUED, IngestionStatus.PROCESSING} and current.task_id:
                     raise DocumentBusyError(document_id)
-                destination = self.uploads_dir / current.stored_filename
+                new_stored_filename = f"{document_id}{file_type}"
+                destination = self.uploads_dir / new_stored_filename
                 os.replace(temp_path, destination)
                 temp_path = None
                 updates = current.model_dump(mode="json")
                 updates.update({
                     "original_filename": safe_filename,
+                    "stored_filename": new_stored_filename,
+                    "file_type": file_type,
                     "file_size_bytes": file_size,
                     "revision": str(uuid4()),
                     "status": IngestionStatus.QUEUED,
@@ -168,6 +213,8 @@ class DocumentRegistry:
                 updated = DocumentRecord.model_validate(updates)
                 documents[index] = updated
                 self._write_documents(documents)
+                if current.stored_filename != new_stored_filename:
+                    (self.uploads_dir / current.stored_filename).unlink(missing_ok=True)
                 return updated
         finally:
             if temp_path is not None:
@@ -181,6 +228,7 @@ class DocumentRegistry:
         stage: IngestionStage | None = None,
         task_id: str | None = None,
         page_count: int | None = None,
+        page_kind: str | None = None,
         chunk_count: int | None = None,
         failure_code: str | None = None,
         clear_failure_code: bool = False,
@@ -201,6 +249,7 @@ class DocumentRegistry:
                     "stage": stage,
                     "task_id": task_id,
                     "page_count": page_count,
+                    "page_kind": page_kind,
                     "chunk_count": chunk_count,
                     "failure_code": failure_code,
                 }.items():
@@ -256,21 +305,34 @@ class DocumentRegistry:
         self,
         filename: str | None,
         content_type: str | None,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """Return ``(safe_filename, file_type)``, raising ``InvalidUploadError``.
+
+        The extension is the format gate (D61); the MIME only has to be one of
+        the plausible types for *that* extension -- or the universal
+        ``application/octet-stream`` that browsers and curl send on a bad day.
+        """
+
         if not filename:
             raise InvalidUploadError("missing_filename")
 
         safe_filename = Path(filename.replace("\\", "/")).name
-        if not safe_filename.lower().endswith(".pdf"):
+        file_type = Path(safe_filename).suffix.lower()
+        if file_type not in ACCEPTED_EXTENSIONS:
             raise InvalidUploadError("unsupported_file_type")
 
         normalized_content_type = (content_type or "").lower()
-        if normalized_content_type and normalized_content_type not in PDF_CONTENT_TYPES:
-            raise InvalidUploadError("unsupported_content_type")
+        if normalized_content_type not in _UNIVERSAL_MIME:
+            if normalized_content_type not in ACCEPTED_EXTENSIONS[file_type]:
+                raise InvalidUploadError("unsupported_content_type")
 
-        return safe_filename
+        return safe_filename, file_type
 
-    def _write_temp_pdf(self, stream: BinaryIO) -> tuple[Path, int]:
+    def _write_temp_file(
+        self, stream: BinaryIO, file_type: str
+    ) -> tuple[Path, int]:
+        """Spool one upload to a temp file with size/emptiness/magic checks."""
+
         temp_path = self.uploads_dir / f".{uuid4().hex}.uploading"
         first_bytes = b""
         file_size = 0
@@ -279,7 +341,9 @@ class DocumentRegistry:
             with temp_path.open("xb") as destination:
                 while chunk := stream.read(1024 * 1024):
                     if not first_bytes:
-                        first_bytes = chunk[:5]
+                        # 5 covers %PDF-, 4 covers the ZIP local header; keep a
+                        # small margin so neither magic can straddle the cut.
+                        first_bytes = chunk[:8]
 
                     file_size += len(chunk)
                     if file_size > self.max_file_size_bytes:
@@ -294,9 +358,12 @@ class DocumentRegistry:
             temp_path.unlink(missing_ok=True)
             raise InvalidUploadError("empty_file")
 
-        if not first_bytes.startswith(b"%PDF-"):
+        # Text formats have no magic number -- an unreadable one fails honestly
+        # at parse time (D61: no silent guessing, no silent downgrade).
+        magic = _MAGIC_BY_EXTENSION.get(file_type)
+        if magic is not None and not first_bytes.startswith(magic):
             temp_path.unlink(missing_ok=True)
-            raise InvalidUploadError("invalid_pdf_header")
+            raise InvalidUploadError("invalid_file_header")
 
         return temp_path, file_size
 

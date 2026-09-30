@@ -1,5 +1,7 @@
 """Celery tasks for document ingestion (parse -> chunk -> embed -> publish)."""
 
+from src.ingestion.document_parser import EmptyDocumentError
+from src.ingestion.page_map import PageMapError
 from src.models.schemas import IngestionStage, IngestionStatus
 from src.retrieval.index_builder import IndexBuildBusyError, IndexBuilder
 from src.storage.document_registry import DocumentRegistry
@@ -12,7 +14,7 @@ from .celery_app import celery_app
     name="document_qa.parse_document",
 )
 def parse_document_task(self, document_id: str) -> dict[str, object]:
-    """Parse one PDF, then rebuild the versioned vector index from all ordered docs."""
+    """Parse one document, then rebuild the versioned vector index from all ordered docs."""
 
     registry = DocumentRegistry()
     document = registry.get_document(document_id)
@@ -30,7 +32,7 @@ def parse_document_task(self, document_id: str) -> dict[str, object]:
 
     try:
         if not pdf_path.is_file():
-            raise FileNotFoundError("stored PDF is missing")
+            raise FileNotFoundError("stored file is missing")
 
         def report_stage(stage: IngestionStage) -> None:
             # COMPLETED must not force status back to processing; IndexBuilder
@@ -97,13 +99,23 @@ def _failure_code(error: Exception) -> str:
         return "stored_file_missing"
     if isinstance(error, IndexBuildBusyError):
         return "index_build_busy"
-    if isinstance(error, ValueError):
-        return "pdf_parse_failed"
+    # D61: a document that parsed to nothing is not a parse crash -- the UI has to
+    # be able to say "this file has no readable content" instead of "解析失败".
+    if isinstance(error, EmptyDocumentError):
+        return "empty_document"
+    # D61: an unreadable/undecodable source (GBK text that could not be sniffed,
+    # a corrupt container) is likewise its own code.
+    if isinstance(error, PageMapError):
+        return "unsupported_or_unreadable"
     message = str(error).lower()
+    if "conversion" in message or "could not load document" in message:
+        return "unsupported_or_unreadable"
+    if isinstance(error, ValueError):
+        return "document_parse_failed"
     if "embedding" in message:
         return "embedding_failed"
     if "chroma" in message:
         return "index_publish_failed"
     if "docling" in message:
-        return "pdf_parse_failed"
-    return "pdf_parse_failed"
+        return "document_parse_failed"
+    return "document_parse_failed"

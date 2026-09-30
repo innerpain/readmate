@@ -40,7 +40,10 @@ MODE_CHAT = "chat"
 #       otherwise chat-mode greetings drift to plain prose (``answer_not_json``)
 #   4 - memory contract added to the frozen rules (explicit request -> write now,
 #       inferred -> ask once); 3 was the history note
-PROMPT_SNAPSHOT_VERSION = 4
+# D61: 4 -> 5.  The system prompt's self-description changed ("PDF collection" ->
+# "document collection"), and a changed snapshot MUST rebuild -- otherwise every
+# existing session keeps instructing the model that the library is PDF-only.
+PROMPT_SNAPSHOT_VERSION = 5
 
 # 2026-09-19 用户口径（M1=c / M2=a）：记忆的写入语义要跟"谁发起"绑定，写进冻结规则段。
 MEMORY_CONTRACT = (
@@ -760,7 +763,7 @@ def _round_record(
 
 def _system_prompt(mode: str) -> str:
     common = (
-        "You are ReadMate, a local reading assistant for the user's own PDF collection.\n"
+        "You are ReadMate, a local reading assistant for the user's own document collection.\n"
         "Answer with evidence from tools whenever the question is about the material.\n"
         "Return your final answer as JSON only:\n"
         '{"answer": "...", "citations": [{"chunk_id": "...", "page": 1, "quote": "..."}], '

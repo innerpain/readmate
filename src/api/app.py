@@ -86,7 +86,7 @@ def register_document(
     file: UploadFile = File(...),
     registry: DocumentRegistry = Depends(get_document_registry),
 ):
-    """Validate and persist a PDF registration without starting ingestion."""
+    """Validate and persist a document registration without starting ingestion."""
 
     try:
         document = registry.register_upload(
@@ -115,7 +115,7 @@ def register_document(
     except InvalidUploadError as error:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid PDF upload: {error}",
+            detail=f"Invalid upload: {error}",
         ) from error
     except RegistryLockedError as error:
         raise HTTPException(
@@ -142,7 +142,7 @@ def replace_registered_document(
     file: UploadFile = File(...),
     registry: DocumentRegistry = Depends(get_document_registry),
 ):
-    """Replace a PDF while keeping its document identity."""
+    """Replace a document's file while keeping its document identity."""
     try:
         document = registry.replace_upload(document_id, file.filename, file.content_type, file.file)
         task = parse_document_task.delay(document.document_id)
@@ -153,7 +153,7 @@ def replace_registered_document(
     except DocumentBusyError as error:
         raise HTTPException(status_code=409, detail="Document ingestion is already running.") from error
     except InvalidUploadError as error:
-        raise HTTPException(status_code=400, detail=f"Invalid PDF upload: {error}") from error
+        raise HTTPException(status_code=400, detail=f"Invalid upload: {error}") from error
     except RegistryLockedError as error:
         raise HTTPException(status_code=503, detail="Document registry is busy. Please retry shortly.") from error
     except RegistryDataError as error:
@@ -172,7 +172,7 @@ def patch_registered_document(
 ):
     """FE-2: rename (alias) and/or switch a document off.
 
-    Deliberately separate from ``PUT /documents/{id}``, which *replaces the PDF* and
+    Deliberately separate from ``PUT /documents/{id}``, which *replaces the file* and
     re-runs ingestion: renaming a document must never cost a re-index.
     """
 
@@ -223,7 +223,7 @@ def get_registered_document(
 def list_registered_documents(
     registry: DocumentRegistry = Depends(get_document_registry),
 ):
-    """List locally registered PDFs and their current ingestion states."""
+    """List locally registered documents and their current ingestion states."""
 
     try:
         rows = []
@@ -247,7 +247,7 @@ def delete_registered_document(
     document_id: str,
     registry: DocumentRegistry = Depends(get_document_registry),
 ):
-    """Delete a registered PDF and enqueue a complete index rebuild."""
+    """Delete a registered document and enqueue a complete index rebuild."""
     try:
         deleted = registry.delete_document(document_id)
         try:

@@ -12,7 +12,8 @@ import { useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api";
 import { useAppStore } from "../../store";
-import { parseQualityNotice, type DocumentRecord, type QualityNotice } from "../../types";
+import { failureText, parseQualityNotice, type DocumentRecord, type QualityNotice } from "../../types";
+import { countUnit } from "../../pageLabel";
 
 const STAGES = ["queued", "parsing", "chunking", "embedding", "indexing", "completed"] as const;
 
@@ -183,12 +184,14 @@ export default function LibraryView() {
             disabled={upload.isPending}
             onClick={() => fileRef.current?.click()}
           >
-            {upload.isPending ? "上传中…" : "上传 PDF"}
+            {upload.isPending ? "上传中…" : "上传文档"}
           </button>
           <input
             ref={fileRef}
             type="file"
-            accept="application/pdf,.pdf"
+            // D61: PDF + the office/text formats the backend accepts.  Kept in
+            // sync with ACCEPTED_EXTENSIONS (src/storage/document_registry.py).
+            accept=".pdf,.docx,.pptx,.xlsx,.md,.html,.htm,.csv,application/pdf"
             multiple
             className="hidden"
             onChange={(event) => {
@@ -200,7 +203,9 @@ export default function LibraryView() {
       </div>
 
       {upload.isError && (
-        <div className="border-b border-red-200 bg-red-50 px-4 py-1.5 text-xs text-red-700">上传失败：请确认是有效 PDF 且小于服务端限额。</div>
+        <div className="border-b border-red-200 bg-red-50 px-4 py-1.5 text-xs text-red-700">
+          上传失败：支持 PDF / Word / PPT / Excel / Markdown / HTML / CSV，且不超过 20 MB。
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-1.5 border-b border-gray-200 bg-white px-4 py-2 text-xs">
@@ -222,7 +227,7 @@ export default function LibraryView() {
           </button>
         ))}
         {(collections.data?.collections ?? []).length === 0 && (
-          <span className="text-gray-400">还没有分区：先上传 PDF，再「新建分区」把文档归类。</span>
+          <span className="text-gray-400">还没有分区：先上传文档，再「新建分区」把文档归类。</span>
         )}
 
         {focused && (
@@ -256,7 +261,7 @@ export default function LibraryView() {
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {rows.length === 0 && (
           <div className="mt-10 text-center text-xs text-gray-400">
-            {focusCollectionId ? "该分区内暂无文档。" : "暂无文档，点右上角「上传 PDF」开始。"}
+            {focusCollectionId ? "该分区内暂无文档。" : "暂无文档，点右上角「上传文档」开始。"}
           </div>
         )}
         <div className="space-y-2">
@@ -301,7 +306,11 @@ export default function LibraryView() {
                     )}
                     {doc.alias && <div className="mt-0.5 truncate text-[11px] text-gray-400">原名：{doc.original_filename}</div>}
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-gray-400">
-                      {doc.page_count ? <span>{doc.page_count} 页</span> : null}
+                      {/* D61: the count's unit follows the format -- a Word file
+                          has no pages here, it has sections (§), a deck has
+                          slides.  Printing "12 页" for a docx would be a lie the
+                          user can check in one click. */}
+                      {doc.page_count ? <span>{doc.page_count} {countUnit(doc.page_kind)}</span> : null}
                       {doc.chunk_count ? <span>{doc.chunk_count} chunks</span> : null}
                       {doc.size_bytes ? <span>{(doc.size_bytes / 1024 / 1024).toFixed(1)} MB</span> : null}
                       {doc.updated_at ? <span>· {doc.updated_at.slice(0, 16).replace("T", " ")}</span> : null}
@@ -319,7 +328,7 @@ export default function LibraryView() {
 
                 {doc.status === "failed" && (
                   <div className="mt-1.5 flex items-center gap-2 text-xs">
-                    <span className="text-red-600">{doc.failure_code ?? "入库失败"}</span>
+                    <span className="text-red-600">{failureText(doc.failure_code)}</span>
                     <button className="rounded border border-red-200 px-1.5 py-0.5 text-red-600 hover:bg-red-50" onClick={() => retry.mutate(doc.document_id)}>
                       重试
                     </button>
@@ -366,7 +375,7 @@ export default function LibraryView() {
                 <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
                   <DocChip
                     label="原文"
-                    title={doc.status === "completed" ? "在新窗口打开 PDF 原文" : "入库完成后可查看"}
+                    title={doc.status === "completed" ? "在新窗口打开原文" : "入库完成后可查看"}
                     disabled={doc.status !== "completed"}
                     onClick={() => window.open(`/agent/documents/${encodeURIComponent(doc.document_id)}/file`, "_blank", "noopener")}
                   />

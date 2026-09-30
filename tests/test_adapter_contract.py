@@ -39,7 +39,8 @@ def _hit(chunk_id: str = "c1", document_id: str = "d1", page: int = 3, score: fl
 
 
 def test_api_version_is_frozen():
-    assert ADAPTER_API_VERSION == "readmate-rag-adapter-3"
+    # D61 bumped 3 -> 4 for the additive SearchHit.page_kind / ReadResult.page_kind.
+    assert ADAPTER_API_VERSION == "readmate-rag-adapter-4"
 
 
 def test_search_hit_exposes_every_required_field():

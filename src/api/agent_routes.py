@@ -626,18 +626,54 @@ def _known_document(registry: DocumentRegistry, document_id: str):
         raise HTTPException(status_code=404, detail={"code": "document_not_found", "message": str(error)}) from error
 
 
+# D61: what the browser gets per stored format.  pdf/html render inline; the
+# office/text formats have no in-browser renderer, so they download (an
+# attachment is honest -- a blank tab would look like a broken file).
+_INLINE_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".html": "text/html; charset=utf-8",
+    ".htm": "text/html; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+}
+_DOWNLOAD_MEDIA_TYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
 @router.get("/documents/{document_id}/file")
 def document_file(document_id: str):
-    """Stream the stored PDF inline. ``document_id`` is the UUID from search /
+    """Stream the stored source file. ``document_id`` is the UUID from search /
     ``/agent/collections/{id}/documents``; unknown ids 404 (no listing, no
-    filesystem probing)."""
+    filesystem probing).  D61: the media type follows the stored format, and
+    formats the browser cannot render come back as a download."""
 
     registry = DocumentRegistry()
     record = _known_document(registry, document_id)
     path = (registry.uploads_dir / record.stored_filename).resolve()
     if path.parent != registry.uploads_dir.resolve() or not path.is_file():
         raise HTTPException(status_code=404, detail={"code": "file_not_found", "message": document_id})
-    return FileResponse(path, media_type="application/pdf", headers={"Content-Disposition": "inline"})
+    suffix = path.suffix.lower()
+    if suffix in _DOWNLOAD_MEDIA_TYPES:
+        media_type = _DOWNLOAD_MEDIA_TYPES[suffix]
+        # Only a download names a file, and it names the *original* one -- the
+        # stored name is a UUID.  Quote so a filename with a space or CJK chars
+        # cannot break out of the header (the header value is built here, not by
+        # the browser).
+        from urllib.parse import quote
+
+        download_name = quote(record.original_filename or path.name)
+        disposition = f"attachment; filename=\"{download_name}\"; filename*=UTF-8''{download_name}"
+    else:
+        media_type = _INLINE_MEDIA_TYPES.get(suffix, "application/octet-stream")
+        disposition = "inline"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={"Content-Disposition": disposition},
+    )
 
 
 @router.get("/documents/{document_id}/figures")

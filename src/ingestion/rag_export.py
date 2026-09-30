@@ -138,6 +138,12 @@ def figure_payload(doc: DoclingDocument, picture) -> tuple[str, dict]:
 def map_type(label) -> str | None:
     if label in FURNITURE:
         return None
+    # D61: the XLSX backend wraps every worksheet in a ``GroupLabel.SHEET``
+    # group whose ``name`` is the sheet title.  That name is the only anchor a
+    # spreadsheet row can cite, and the group itself carries no text -- so the
+    # group is surfaced as a heading (see build_rag_document), not dropped.
+    if str(getattr(label, "value", "")) == "sheet":
+        return "sheet_group"
     if not isinstance(label, DocItemLabel):
         return None
     mapping = {
@@ -164,15 +170,39 @@ def build_rag_document(
     source_pdf: Path | str,
     source_docling_json: Path | str | None = None,
     parser_options: dict | None = None,
+    file_type: str = ".pdf",
 ) -> dict:
     raw_items: list[dict] = []
+    dropped_empty_tables = 0
+    is_pdf = (file_type or ".pdf").lower() == ".pdf"
     for item, level in doc.iterate_items(
         with_groups=True,
         traverse_pictures=False,
         included_content_layers={ContentLayer.BODY},
     ):
-        typ = map_type(getattr(item, "label", None))
+        label = getattr(item, "label", None)
+        typ = map_type(label)
         if typ is None:
+            continue
+        # D61: a worksheet group is surfaced as a top-level heading carrying the
+        # sheet name -- the anchor every row of that sheet will cite through.
+        if typ == "sheet_group":
+            name = str(getattr(item, "name", "") or "").strip()
+            if not name:
+                continue
+            raw_items.append(
+                {
+                    "type": "heading",
+                    "level": 1,
+                    "page": None,
+                    "page_end": None,
+                    "bbox": None,
+                    "text": name,
+                    "search_text": name,
+                    "payload": {},
+                    "label": "sheet",
+                }
+            )
             continue
         prov = getattr(item, "prov", None) or []
         page = prov[0].page_no if prov else None
@@ -198,6 +228,24 @@ def build_rag_document(
         payload: dict = {}
         if typ == "table":
             text, payload = table_payload(doc, item)
+            # D61: the XLSX backend exports a worksheet region without any table
+            # structure as an *empty* table -- no text, no grid rows, no columns
+            # (it used to become a "shape: 0 rows x 0 cols" chunk that could be
+            # cited), so it is dropped -- counted, never silent.  The drop stays
+            # deliberately narrow: a table whose only content sits in its header
+            # still carries data (a one-row worksheet comes back from Docling in
+            # exactly that shape -- measured), so it survives and its column
+            # names reach the table_summary chunk.
+            grid = payload.get("grid") or {}
+            blank_headers = not [h for h in (grid.get("headers") or []) if str(h).strip()]
+            if (
+                not text
+                and not (grid.get("rows") or [])
+                and blank_headers
+                and "error" not in grid
+            ):
+                dropped_empty_tables += 1
+                continue
         elif typ == "figure":
             text, payload = figure_payload(doc, item)
         elif typ == "formula":
@@ -223,7 +271,14 @@ def build_rag_document(
             }
         )
 
-    raw_items = merge_cross_page_fragments(raw_items)
+    # D61: the merge joins a paragraph starting with a lowercase letter to the
+    # previous one when their page numbers differ by exactly one -- that is a
+    # PDF layout artifact (a sentence broken by a page column), not content.
+    # For office/text formats a page number may be a *section* number, where two
+    # adjacent sections genuinely are different passages; running the merge there
+    # would silently glue unrelated text together.  PDF only.
+    if is_pdf:
+        raw_items = merge_cross_page_fragments(raw_items)
     raw_items = demote_pre_figure_titles(raw_items)
 
     bound_caps = set()
@@ -260,6 +315,9 @@ def build_rag_document(
                 "type": it["type"],
                 "page": it.get("page"),
                 "page_end": it.get("page_end"),
+                # D61: the heading rank rides to the page-mapping stage -- the
+                # top-level-heading rule needs it, and the refiner drops it after.
+                "level": it.get("level"),
                 "bbox": it.get("bbox"),
                 "heading_path": heading_path,
                 "text": it["text"],
@@ -274,6 +332,9 @@ def build_rag_document(
         "schema": "rag_document_v1",
         "document_id": document_id,
         "source_pdf": str(source_pdf),
+        # D61: the true source format rides along; ``source_pdf`` stays for
+        # backwards compatibility (it is only read as the filename fallback).
+        "file_type": (file_type or ".pdf").lower(),
         "source_docling_json": str(source_docling_json) if source_docling_json else None,
         "parser": {
             "name": "docling",
@@ -284,6 +345,8 @@ def build_rag_document(
             "n_elements": len(elements),
             "n_pages": len(pages),
             "pages": pages,
+            # D61: XLSX noise tables dropped (counted, never silent).
+            "dropped_empty_tables": dropped_empty_tables,
             "by_type": {
                 t: sum(1 for e in elements if e["type"] == t)
                 for t in sorted({e["type"] for e in elements})

@@ -10,6 +10,9 @@ from typing import Any
 # Same estimator the chunker uses for its pack ceilings: keeping one definition of
 # "a token" inside the ingestion layer matters more than avoiding the import.
 from src.ingestion.ordered_chunker import estimate_tokens, take_within_budget
+# D62: the prefix chain borrows the very predicate the ``§N`` section rule uses --
+# one definition of "top-level heading" per document, so the two cannot disagree.
+from src.ingestion.page_map import top_heading_predicate
 
 NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\s+(\S.*)$")
 APPENDIX_HEADING = re.compile(r"^(Appendix\s+[A-Z]|[A-Z])\s+(\S.*)$", re.I)
@@ -35,7 +38,29 @@ def _numbered_depth(text: str) -> tuple[int, str] | None:
     return m.group(1).count(".") + 1, text.strip()
 
 
-def deepen_heading_paths(elements: list[dict[str, Any]]) -> list[list[str]]:
+def deepen_heading_paths(
+    elements: list[dict[str, Any]], *, reset_on_unnumbered_top: bool = False
+) -> list[list[str]]:
+    """The heading prefix of every element (the path *without* itself).
+
+    ``reset_on_unnumbered_top`` (D62, non-PDF formats): an unnumbered heading
+    that is a *top-level* heading for this document starts a new chain instead of
+    nesting inside the previous one.  Measured before the fix
+    (``tmp/fmt-probe/probe_heading_nesting.py``): two DOCX chapters came out as
+    ``Chapter One > Chapter Two``, two slides as ``Slide one > Slide two``, two
+    worksheets as ``Sales-Q3 > Notes-EU`` -- while ``section`` (the ``§N`` rule,
+    same predicate) already called each of them its own section.  A genuine
+    sub-heading (shallower level, or a numbered one) still nests, and the reset
+    pushes depth 1 so a following numbered child keeps the new top as its parent.
+
+    PDFs deliberately keep the conservative rule: Docling hands *every* PDF
+    heading ``level=1`` and no ``title``, so the predicate degenerates to
+    "all headings are top" there.  Measured (``tmp/fmt-probe/probe_d62_drift.py``)
+    that would rewrite 52 of the 275 shipped chunk rows -- the PDF zero-drift
+    guard forbids it, and the PDF ``§N``/``section`` field is already correct.
+    """
+
+    is_top = top_heading_predicate(elements) if reset_on_unnumbered_top else None
     stack: list[tuple[int, str]] = []
     paths: list[list[str]] = []
     for el in elements:
@@ -48,6 +73,9 @@ def deepen_heading_paths(elements: list[dict[str, Any]]) -> list[list[str]]:
                     stack.pop()
                 stack.append((depth, title))
                 paths.append([t for _, t in stack[:-1]])
+            elif is_top is not None and is_top(el):
+                stack = [(1, text)]
+                paths.append([])
             else:
                 paths.append([t for _, t in stack])
                 # Conservative: treat unnumbered heading as child title without popping.
@@ -124,7 +152,30 @@ def build_table_structure(payload: dict[str, Any], caption: str) -> tuple[dict[s
     grid = payload.get("grid") if isinstance(payload.get("grid"), dict) else {}
     headers = [str(h) for h in (grid.get("headers") or [])]
     rows = grid.get("rows") if isinstance(grid.get("rows"), list) else []
-    if grid.get("error") or not rows:
+    if grid.get("error"):
+        return (
+            {"raw_grid": grid, "caption": caption, "markdown": payload.get("markdown")},
+            "unparsed",
+            "未能可靠解析该表结构，保留原始 grid/markdown。",
+        )
+    if not rows:
+        # D61: a worksheet holding a single row comes back from Docling with that
+        # row as the *header* and zero data rows (measured).  The column names are
+        # the content -- keep them so the summary chunk can carry them -- instead
+        # of reporting an unparseable table and losing them.
+        if [h for h in headers if h.strip()]:
+            return (
+                {
+                    "caption": caption,
+                    "headers": headers,
+                    "rows": [],
+                    "facts": [],
+                    "facts_dropped": 0,
+                    "markdown": payload.get("markdown"),
+                },
+                "partial",
+                "",
+            )
         return (
             {"raw_grid": grid, "caption": caption, "markdown": payload.get("markdown")},
             "unparsed",
@@ -194,7 +245,15 @@ def refine_rag_document(
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     elements = list(rag.get("elements") or [])
-    norm_paths = deepen_heading_paths(elements)
+    # D62: every format except PDF lets a top-level unnumbered heading start a new
+    # prefix chain (DOCX chapters / PPTX slides / XLSX worksheets used to nest).
+    # PDF is excluded on measurement, not on principle -- see
+    # ``deepen_heading_paths``.  A rag document without ``file_type`` is a legacy
+    # PDF artifact and keeps the old behaviour.
+    file_type = str(rag.get("file_type") or ".pdf").lower()
+    norm_paths = deepen_heading_paths(
+        elements, reset_on_unnumbered_top=file_type != ".pdf"
+    )
 
     seen_abstract = False
     in_references = False
@@ -207,6 +266,10 @@ def refine_rag_document(
         "figure_path_fixes": 0,
         "table_unparsed": 0,
         "formula_unparsed": 0,
+        # D61: empty XLSX tables were dropped upstream, before any element
+        # existed here -- carry the count so the drop is visible in
+        # quality_report.json instead of vanishing with the rag stage.
+        "dropped_empty_tables": int((rag.get("stats") or {}).get("dropped_empty_tables") or 0),
     }
 
     for idx, el in enumerate(elements):
@@ -361,6 +424,9 @@ def refine_rag_document(
         "schema": "ordered_document_v1",
         "document_id": rag.get("document_id"),
         "source_pdf": rag.get("source_pdf"),
+        # D61: format identity and page semantics ride through the refine pass.
+        "file_type": rag.get("file_type", ".pdf"),
+        "page_kind": rag.get("page_kind", "page"),
         "source_rag_document": True,
         "parser": rag.get("parser") or {},
         "stats": {

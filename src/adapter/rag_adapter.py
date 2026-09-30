@@ -165,6 +165,7 @@ class RagAdapterImpl:
                     filename=record.original_filename,
                     status=str(getattr(record.status, "value", record.status)),
                     page_count=record.page_count,
+                    page_kind=str(getattr(record, "page_kind", None) or "page"),
                     chunk_count=record.chunk_count,
                     failure_code=record.failure_code,
                 )
@@ -194,6 +195,7 @@ class RagAdapterImpl:
             chunk_id=chunk_id,
             page=read_page,
             page_end=read_page_end if read_page_end > read_page else None,
+            page_kind=str(metadata.get("page_kind") or "page"),
             section=str(metadata.get("section") or ""),
             text=str(payload.get("document") or ""),
             chunk_type=str(metadata.get("chunk_type") or ""),
@@ -273,6 +275,7 @@ class RagAdapterImpl:
             chunk_id=None,
             page=page,
             page_end=read_page_end if read_page_end > page else None,
+            page_kind=str(rows[0].get("page_kind") or "page"),
             section=str(rows[0].get("section") or ""),
             text=text[: self.page_chars],
             chunk_type=str(rows[0].get("chunk_type") or ""),
@@ -415,6 +418,8 @@ def _to_hit(chunk, excerpt_chars: int) -> SearchHit:
         filename=chunk.filename or chunk.document_id,
         page=page,
         page_end=page_end if page_end and page_end > page else None,
+        # D61: what the number means; absent on pre-multi-format snapshots.
+        page_kind=str(getattr(chunk, "page_kind", None) or "page"),
         section=chunk.section,
         heading_path=list(chunk.heading_path),
         score=float(chunk.score),

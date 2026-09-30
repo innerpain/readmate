@@ -26,6 +26,9 @@ class AgentCitation(BaseModel):
     # as on the runtime dataclass -- pydantic drops undeclared fields, which kept
     # the span from ever reaching the UI.
     page_end: int | None = None
+    # D61: what the page number means (page / slide / sheet / section); the UI
+    # renders §N for a section instead of a page number.
+    page_kind: str = "page"
     quote: str = ""
 
 

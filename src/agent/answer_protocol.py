@@ -18,6 +18,9 @@ class CitationOut:
     # A3: last page the cited chunk covers; equal to ``page`` (or None) when the
     # passage does not straddle a page break.
     page_end: int | None = None
+    # D61: what ``page`` means for the cited chunk -- "page" / "slide" / "sheet"
+    # / "section".  The UI labels them differently (p3 / 幻灯片 3 / 工作表 3 / §2).
+    page_kind: str = "page"
     quote: str = ""
 
 
@@ -113,6 +116,9 @@ def validate_citations(answer: AgentAnswer, observed: dict[str, dict]) -> AgentA
                 filename=str(meta.get("filename") or ""),
                 page=_page_of(citation.page, meta),
                 page_end=_page_end_of(meta),
+                # D61: the kind comes from the *observed* chunk, never from the
+                # model -- the model never sees or states a page kind.
+                page_kind=str(meta.get("page_kind") or "page"),
                 quote=citation.quote,
             )
         )

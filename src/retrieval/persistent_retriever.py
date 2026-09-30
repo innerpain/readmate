@@ -78,6 +78,9 @@ class RetrievedChunk:
     # A3: last page the chunk covers (0 = same as ``page`` / unknown) so a
     # citation can show the real span instead of only the start page.
     page_end: int = 0
+    # D61: what ``page`` means for this chunk -- page / slide / sheet / section.
+    # Older snapshots predate the field and are all real pages, hence the default.
+    page_kind: str = "page"
     content_kind: str = "text"
     atomic: bool = False
     heading_path: list[str] = field(default_factory=list)
@@ -570,6 +573,7 @@ def _replace_chunk(
         filename=chunk.filename,
         page=chunk.page,
         page_end=chunk.page_end,
+        page_kind=chunk.page_kind,
         section=chunk.section,
         content_kind=chunk.content_kind,
         atomic=chunk.atomic,
@@ -612,6 +616,9 @@ def _to_retrieved_chunk(
         # 0 for snapshots published before the span was recorded; callers fall
         # back to ``page`` so an older index keeps working.
         page_end=int(metadata.get("page_end") or 0),
+        # D61: absent on snapshots published before multi-format support, where
+        # every page number was a real PDF page.
+        page_kind=str(metadata.get("page_kind") or "page"),
         section=str(metadata.get("section") or "Unknown"),
         content_kind=str(metadata.get("content_kind") or _kind_from_type(metadata)),
         atomic=bool(int(metadata.get("atomic") or 0)) if not isinstance(metadata.get("atomic"), bool) else bool(metadata.get("atomic")),

@@ -1,6 +1,8 @@
 # Document QA Assistant（ReadMate）
 
-**本地单用户、多 PDF、引用可追溯的 RAG + Agent 问答服务。** PDF、解析真源、切块产物与向量索引全部留在本机 `data/`；每次提问只把本轮证据 Context 发给模型，不上传原始 PDF。
+**本地单用户、多格式、引用可追溯的 RAG + Agent 问答服务。** 源文件、解析真源、切块产物与向量索引全部留在本机 `data/`；每次提问只把本轮证据 Context 发给模型，不上传原始文件。
+
+支持的格式：PDF、DOCX、PPTX、XLSX、Markdown、HTML、CSV（单文件 ≤ 20 MB）。
 
 - 入库：Docling 解析 → `ordered_document_v1` 真源 → 结构感知切块 → 版本化 Chroma 索引（Celery 异步，重启可恢复）。
 - 问答：ReadMate Agent（ReAct + 证据闸门），引用只允许来自**本轮工具真实观察到的 chunk**。
@@ -37,7 +39,7 @@ curl http://127.0.0.1:8000/health
 
 打开 **http://localhost:8000** 使用界面（与 API 同源，无 CORS 代码）；OpenAPI 在 http://localhost:8000/docs。
 
-首次使用流程：左栏上传 PDF → Celery worker 依次 `parsing → chunking → embedding → publishing` → 建资料集（collection = 已发布快照上的文档视图）→ 提问。
+首次使用流程：左栏上传文档 → Celery worker 依次 `parsing → chunking → embedding → publishing` → 建资料集（collection = 已发布快照上的文档视图）→ 提问。
 
 权重与离线：Embedding（Qwen3-Embedding-0.6B）、Docling 版面/OCR、reranker（bge-reranker-v2-m3）首次需联网拉取；宿主机 HF 缓存已挂载进容器，暖缓存后可设 `HF_HUB_OFFLINE=1`。挂载路径已参数化（D49）：默认 `${HOME}/.cache/huggingface`，缓存不在默认位置时在 `.env` 设 `HF_CACHE_DIR`（Windows 用正斜杠，如 `HF_CACHE_DIR=D:/hf-cache`），不再写死用户名。reranker 默认走本地快照 `data/models/modelscope/models/BAAI--bge-reranker-v2-m3/snapshots/master`。
 
@@ -48,11 +50,12 @@ curl http://127.0.0.1:8000/health
 ### 入库（证据生产）
 
 ```text
-PDF 上传
-  -> DocumentRegistry（内容 SHA-256 幂等；UUID 落盘）
+文档上传（PDF / DOCX / PPTX / XLSX / MD / HTML / CSV）
+  -> DocumentRegistry（格式白名单 + MIME + magic 校验；UUID 落盘）
   -> Celery：parse_document / rebuild_index
-  -> Docling StandardPdfPipeline
+  -> Docling（PDF 走 StandardPdfPipeline；办公/文本格式走各自 backend）
        table_mode=ACCURATE · formula/code enrichment · figures REFERENCED · scale=3.0
+  -> page_map（页号/幻灯片号/工作表号；无页格式按顶级标题分节，标 §N）
   -> rag_export -> OrderedRefiner（Role Gate / facts / latex / 路径）
   -> data/parsed/<doc_id>/ordered.json          # ordered_document_v1 真源
   -> OrderedChunker（chunker_version=ordered-aware-1）
@@ -114,8 +117,8 @@ LLM API        -> .env 的 API_KEY / BASE_URL / MODEL（只收 Context）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/documents` | 上传 PDF 并排队入库（SHA-256 幂等） |
-| `GET` | `/documents` | 文档列表：状态 / 页数 / chunk 数 |
+| `POST` | `/documents` | 上传文档并排队入库（PDF / DOCX / PPTX / XLSX / MD / HTML / CSV） |
+| `GET` | `/documents` | 文档列表：状态 / 数量（页·幻灯片·工作表·节，随格式）/ chunk 数 |
 | `PUT` | `/documents/{document_id}` | 替换已注册文档 |
 | `DELETE` | `/documents/{document_id}` | 删除文档 |
 | `POST` | `/documents/{document_id}/retry` | 仅 `failed` 可重试 |

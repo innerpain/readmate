@@ -13,6 +13,24 @@ from src.adapter.contracts import (
 )
 
 
+def _doc_info(record) -> DocInfo:
+    """Project one registry record onto the adapter's ``DocInfo``.
+
+    D61: ``page_kind`` travels with the count so the digest the model reads
+    never calls a deck's slide count "pages".
+    """
+
+    return DocInfo(
+        document_id=record.document_id,
+        filename=record.original_filename,
+        status=str(getattr(record.status, "value", record.status)),
+        page_count=record.page_count,
+        page_kind=str(getattr(record, "page_kind", None) or "page"),
+        chunk_count=record.chunk_count,
+        failure_code=record.failure_code,
+    )
+
+
 class CollectionService:
     """Maps a collection_id to document_ids and to registry status."""
 
@@ -69,7 +87,7 @@ class CollectionService:
     def list_docs_multi(self, collection_ids: Sequence[str]) -> list[DocInfo]:
         """``list_docs`` over the union of several collections, de-duplicated by
         document_id (R7): the multi-collection system prompt lists every in-scope
-        PDF exactly once."""
+        document exactly once."""
 
         allowed: set[str] = set()
         for collection_id in collection_ids:
@@ -82,16 +100,7 @@ class CollectionService:
         for record in self.registry.list_documents():
             if record.document_id not in allowed:
                 continue
-            infos.append(
-                DocInfo(
-                    document_id=record.document_id,
-                    filename=record.original_filename,
-                    status=str(getattr(record.status, "value", record.status)),
-                    page_count=record.page_count,
-                    chunk_count=record.chunk_count,
-                    failure_code=record.failure_code,
-                )
-            )
+            infos.append(_doc_info(record))
         return infos
 
     def list_docs(self, collection_id: str) -> list[DocInfo]:
@@ -102,16 +111,7 @@ class CollectionService:
         for record in self.registry.list_documents():
             if record.document_id not in allowed:
                 continue
-            infos.append(
-                DocInfo(
-                    document_id=record.document_id,
-                    filename=record.original_filename,
-                    status=str(getattr(record.status, "value", record.status)),
-                    page_count=record.page_count,
-                    chunk_count=record.chunk_count,
-                    failure_code=record.failure_code,
-                )
-            )
+            infos.append(_doc_info(record))
         return infos
 
     # ------------------------------------------------------------- digest (第 7 条)
@@ -138,8 +138,13 @@ class CollectionService:
             return ""
         lines: list[str] = []
         for doc in docs:
-            pages = doc.page_count if doc.page_count is not None else "?"
-            lines.append(f"- {doc.filename} ({pages} pages, {doc.chunk_count} chunks)")
+            # D61: the count's unit follows the format -- announcing a deck as
+            # "12 pages" invited citations to pages that do not exist.
+            unit = {"slide": "slides", "sheet": "sheets", "section": "sections"}.get(
+                getattr(doc, "page_kind", None) or "page", "pages"
+            )
+            count = doc.page_count if doc.page_count is not None else "?"
+            lines.append(f"- {doc.filename} ({count} {unit}, {doc.chunk_count} chunks)")
             sections, excerpt = self._chunk_digest(doc.document_id, excerpt_chars=excerpt_chars)
             if sections:
                 lines.append(f"    sections: {' | '.join(sections[:max_sections])}")
