@@ -13,7 +13,14 @@ from typing import Any, Callable
 
 from src.config.settings import get_ingestion_settings, get_model_settings
 from src.ingestion.document_parser import DocumentParser
-from src.ingestion.ordered_chunker import CHUNKER_VERSION, chunk_ordered_document, write_chunks_artifacts
+from src.ingestion.ordered_chunker import (
+    CHUNKER_VERSION,
+    PROSE_MAX_TOKENS,
+    PROSE_OVERLAP_TOKENS,
+    PROSE_TARGET_TOKENS,
+    chunk_ordered_document,
+    write_chunks_artifacts,
+)
 from src.models.schemas import IngestionStage, IngestionStatus
 from src.retrieval.chroma_store import ChromaVectorStore
 from src.retrieval.embedding_generator import EmbeddingGenerator
@@ -100,6 +107,73 @@ def _accumulate_quality(summary: dict[str, Any], document_id: str, out_dir: Path
     summary["per_document"][document_id] = entry
 
 
+def chunking_config() -> dict[str, Any]:
+    """The chunker's own fingerprint, in one place (D18).
+
+    The publish call used to inline these numbers, which meant the manifest could
+    say one thing while the chunker did another.  The reuse decision compares this
+    against the previous manifest, so it has to be the real thing.
+    """
+
+    return {
+        "chunker_version": CHUNKER_VERSION,
+        "prose_target_tokens": PROSE_TARGET_TOKENS,
+        "prose_max_tokens": PROSE_MAX_TOKENS,
+        "prose_overlap_tokens": PROSE_OVERLAP_TOKENS,
+    }
+
+
+# Anything here changing invalidates every document's chunks: the text a chunker
+# produces is a function of the element stream, the chunker and the embedding model.
+_FINGERPRINT_KEYS = ("chunker_version", "chunking_config", "parser_config", "element_schema_version", "embedding_model")
+ELEMENT_SCHEMA_VERSION = "ordered_document_v1"
+
+
+@dataclass
+class ReusePlan:
+    """D18 step 1: which documents may keep the ``chunks.jsonl`` they already have.
+
+    Chunk ids are content-addressed, so an unchanged document's chunks are the same
+    chunks -- re-running the chunker for it only burns CPU.  Reusing them is what
+    makes a one-file upload cheap; the counters are logged so the decision can be
+    audited against reality instead of trusted.
+    """
+
+    unchanged: set[str]
+    reasons: dict[str, str]
+    prev_version: str | None = None
+    chunks_reused: int = 0
+
+    @property
+    def global_fingerprint_ok(self) -> bool:
+        return self.prev_version is not None and not any(
+            reason.startswith("fingerprint") for reason in self.reasons.values()
+        )
+
+
+def _load_chunks_jsonl(path: Path) -> list[dict[str, Any]] | None:
+    """Read a stored ``chunks.jsonl``; ``None`` when it is missing or unreadable.
+
+    A half-written or truncated artifact must never be reused -- the caller falls
+    back to re-chunking, which is the only path that can be trusted.
+    """
+
+    if not path.is_file():
+        return None
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict) or "chunk_id" not in row:
+                return None
+            rows.append(row)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return rows or None
+
+
 class IndexBuilder:
     """Parse (Docling ordered) then chunk/embed/publish a versioned snapshot."""
 
@@ -117,6 +191,83 @@ class IndexBuilder:
         project_root = Path(__file__).resolve().parents[2]
         self.index_dir = Path(index_dir) if index_dir is not None else project_root / "data" / "chroma"
         self._lock_path = self.index_dir / ".build.lock"
+
+    # ------------------------------------------------------------------ D18 reuse
+    def _prev_manifest(self) -> tuple[dict[str, Any] | None, str | None]:
+        """The manifest the ``current.json`` pointer names, plus its version id."""
+
+        pointer = self.index_dir / "current.json"
+        try:
+            version_id = str(json.loads(pointer.read_text(encoding="utf-8")).get("version_id") or "")
+        except (OSError, json.JSONDecodeError):
+            return None, None
+        if not version_id:
+            return None, None
+        try:
+            manifest = json.loads(
+                (self.index_dir / "versions" / version_id / "manifest.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return None, version_id
+        return manifest, version_id
+
+    def _reuse_plan(self, gathered: list[tuple[Any, dict[str, Any], Path]], parser_config: dict[str, Any]) -> ReusePlan:
+        """Which documents may keep the ``chunks.jsonl`` they already have (D18 step 1).
+
+        Reuse needs **every** fingerprint to match -- the chunker and its token
+        budget, the parser config, the element schema and the embedding model.  A
+        mismatch means the stored text may no longer be what the current code would
+        produce, so the whole library is re-chunked: a wasted minute is cheaper than
+        an index nobody can explain.
+
+        Per document the extra condition is ``revision``: the registry bumps it on
+        every (re)parse, so an equal revision means "same file, parsed the same way".
+        """
+
+        plan = ReusePlan(unchanged=set(), reasons={})
+        manifest, version_id = self._prev_manifest()
+        plan.prev_version = version_id
+        if manifest is None:
+            plan.reasons["*"] = "no previous manifest"
+            return plan
+
+        current = {
+            "chunker_version": CHUNKER_VERSION,
+            "chunking_config": chunking_config(),
+            "parser_config": parser_config,
+            "element_schema_version": ELEMENT_SCHEMA_VERSION,
+            "embedding_model": get_model_settings().embedding_model,
+        }
+        for key in _FINGERPRINT_KEYS:
+            if manifest.get(key) != current[key]:
+                plan.reasons["*"] = f"fingerprint changed: {key}"
+                return plan
+
+        prev_docs = {
+            str(entry.get("document_id")): entry
+            for entry in (manifest.get("documents") or [])
+            if isinstance(entry, dict)
+        }
+        for document, _ordered, out_dir in gathered:
+            previous = prev_docs.get(document.document_id)
+            if previous is None:
+                plan.reasons[document.document_id] = "new document"
+                continue
+            if str(previous.get("revision") or "") != str(document.revision or ""):
+                plan.reasons[document.document_id] = "revision changed"
+                continue
+            rows = _load_chunks_jsonl(out_dir / "chunks.jsonl")
+            if rows is None:
+                plan.reasons[document.document_id] = "chunks.jsonl missing or unreadable"
+                continue
+            if int(previous.get("chunk_count") or -1) != len(rows):
+                plan.reasons[document.document_id] = (
+                    f"chunk count {len(rows)} != manifest {previous.get('chunk_count')}"
+                )
+                continue
+            plan.unchanged.add(document.document_id)
+            plan.reasons[document.document_id] = "reused"
+        return plan
 
     def build(
         self,
@@ -144,11 +295,11 @@ class IndexBuilder:
             if progress_callback is not None:
                 progress_callback(IngestionStage.CHUNKING)
 
-            index_chunks: list[IndexChunk] = []
-            per_doc_counts: dict[str, int] = {}
+            # D18 step 1: read every document's element stream first, so the reuse
+            # decision sees the whole picture (it needs the parser fingerprint) before
+            # any chunking happens.
+            gathered: list[tuple[Any, dict[str, Any], Path]] = []
             parser_config: dict[str, Any] = {}
-            # D16: the manifest carries the index's own quality summary now.
-            quality_summary = _new_quality_summary()
             for document in all_documents:
                 ordered_path = self.registry.data_dir / "parsed" / document.document_id / "ordered.json"
                 if not ordered_path.is_file():
@@ -157,17 +308,53 @@ class IndexBuilder:
                 ordered = json.loads(ordered_path.read_text(encoding="utf-8"))
                 if not parser_config:
                     parser_config = dict(ordered.get("parser") or {})
-                chunks, report = chunk_ordered_document(
-                    ordered,
-                    filename=document.original_filename or document.stored_filename,
-                )
-                out_dir = ordered_path.parent
-                write_chunks_artifacts(out_dir, chunks, report)
+                gathered.append((document, ordered, ordered_path.parent))
+
+            plan = self._reuse_plan(gathered, parser_config)
+            started = time.monotonic()
+
+            index_chunks: list[IndexChunk] = []
+            per_doc_counts: dict[str, int] = {}
+            chunked_documents = 0
+            # D16: the manifest carries the index's own quality summary now.
+            quality_summary = _new_quality_summary()
+            for document, ordered, out_dir in gathered:
+                chunks: list[dict[str, Any]] | None = None
+                if document.document_id in plan.unchanged:
+                    chunks = _load_chunks_jsonl(out_dir / "chunks.jsonl")
+                    if chunks is None:
+                        # The artifact the plan trusted is not actually usable; fall
+                        # back to re-chunking rather than publishing a guess.
+                        plan.unchanged.discard(document.document_id)
+                        plan.reasons[document.document_id] = "unreadable chunks.jsonl"
+                if chunks is None:
+                    chunks, report = chunk_ordered_document(
+                        ordered,
+                        filename=document.original_filename or document.stored_filename,
+                    )
+                    write_chunks_artifacts(out_dir, chunks, report)
+                    chunked_documents += 1
                 _accumulate_quality(quality_summary, document.document_id, out_dir)
                 per_doc_counts[document.document_id] = len(chunks)
                 for chunk in chunks:
                     index_chunks.append(_to_index_chunk(chunk))
 
+            plan.chunks_reused = sum(per_doc_counts.get(doc_id, 0) for doc_id in plan.unchanged)
+            logger.info(
+                "index reuse: unchanged_docs=%d/%d reused_chunks=%d/%d chunked_docs=%d "
+                "embedded=%d prev_version=%s elapsed=%.1fs",
+                len(plan.unchanged), len(gathered), plan.chunks_reused, len(index_chunks),
+                chunked_documents, len(index_chunks), plan.prev_version or "-",
+                time.monotonic() - started,
+            )
+
+            if not plan.unchanged:
+                # Worth a line of its own: "nothing was reused" with no reason is
+                # exactly the ambiguity this feature was meant to remove.
+                logger.info(
+                    "index reuse: nothing reused (%s)",
+                    plan.reasons.get("*") or "every document failed its own check",
+                )
             if progress_callback is not None:
                 progress_callback(IngestionStage.EMBEDDING)
 
@@ -197,16 +384,11 @@ class IndexBuilder:
                 index_chunks,
                 embeddings,
                 embedding_model=model_settings.embedding_model,
-                chunking_config={
-                    "chunker_version": CHUNKER_VERSION,
-                    "prose_target_tokens": 320,
-                    "prose_max_tokens": 512,
-                    "prose_overlap_tokens": 64,
-                },
+                chunking_config=chunking_config(),
                 parser_config=parser_config,
                 quality_config=quality_summary,
                 documents=documents_meta,
-                element_schema_version="ordered_document_v1",
+                element_schema_version=ELEMENT_SCHEMA_VERSION,
                 chunker_version=CHUNKER_VERSION,
                 embedding_config=self.embedder.runtime_config(),
             )
@@ -232,6 +414,12 @@ class IndexBuilder:
                 "chunker_version": CHUNKER_VERSION,
                 "parse_only": False,
                 "document_counts": per_doc_counts,
+                # D18 step 1: what the reuse decision actually did, so a caller (and
+                # the log above) can tell an incremental build from a full one.
+                "reused_documents": sorted(plan.unchanged),
+                "reused_chunks": plan.chunks_reused,
+                "chunked_documents": chunked_documents,
+                "reuse_prev_version": plan.prev_version,
             }
             if target_document_id:
                 ordered_path = self.registry.data_dir / "parsed" / target_document_id / "ordered.json"
