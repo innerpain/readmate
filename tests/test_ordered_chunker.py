@@ -287,3 +287,86 @@ def test_legacy_metadata_only_policy_is_still_dropped():
     assert "e2" not in indexed
     assert "e3" in indexed
     assert report["dropped_by_role"] == {"body": 2}
+
+
+def _table_element(
+    element_id: str,
+    *,
+    ordinal: int,
+    heading_path,
+    caption: str = "Table 1",
+    headers=None,
+    rows=None,
+):
+    """A table element with full control over the heading path (``_el`` defaults
+    an empty path to ``["Section"]``, which would hide the CSV case)."""
+
+    return {
+        "element_id": element_id,
+        "ordinal": ordinal,
+        "type": "table",
+        "role": "body",
+        "index_policy": "embed",
+        "page": 1,
+        "heading_path_norm": list(heading_path),
+        "text": caption,
+        "search_text": caption,
+        "structure": {
+            "caption": caption,
+            "headers": headers if headers is not None else ["question", "expect"],
+            "rows": rows if rows is not None else [["q1", "answer"], ["q2", "deny"]],
+            "facts": [],
+        },
+        "atomic": True,
+        "parse_status": "parsed",
+        "payload": {},
+    }
+
+
+def _ordered_of(element, *, document_id: str = "doc1"):
+    return {
+        "schema": "ordered_document_v1",
+        "document_id": document_id,
+        "revision": "r1",
+        "sequence": [element],
+    }
+
+
+def test_non_pdf_table_chunk_carries_the_file_identity():
+    """D66 (a): a CSV has no heading, so without an identity line a question that
+    names the file could not match its table chunks (measured: 0 hits on the real
+    corpus, while the chunk was in the index and readable)."""
+
+    chunks, _report = chunk_ordered_document(
+        _ordered_of(_table_element("e1", ordinal=0, heading_path=[])),
+        filename="hard-eval-set.csv",
+    )
+    tables = [c for c in chunks if c["chunk_type"] in ("table_summary", "table_pack")]
+    assert tables
+    for chunk in tables:
+        assert chunk["retrieval_text"].startswith("filename: hard-eval-set.csv\n")
+    summary = next(c for c in tables if c["chunk_type"] == "table_summary")
+    assert "columns: question | expect" in summary["retrieval_text"]
+
+
+def test_spreadsheet_table_chunk_keeps_the_sheet_name_and_gains_the_file():
+    chunks, _report = chunk_ordered_document(
+        _ordered_of(_table_element("e1", ordinal=0, heading_path=["chunk-stats"])),
+        filename="corpus-stats.xlsx",
+    )
+    summary = next(c for c in chunks if c["chunk_type"] == "table_summary")
+    assert summary["retrieval_text"].startswith("filename: corpus-stats.xlsx\nchunk-stats\n")
+
+
+def test_pdf_table_chunk_keeps_its_indexed_text_unchanged():
+    """Zero drift: the published PDFs must not gain an identity line."""
+
+    chunks, _report = chunk_ordered_document(
+        _ordered_of(_table_element("e1", ordinal=0, heading_path=["4 Experiments"])),
+        filename="paper.pdf",
+    )
+    tables = [c for c in chunks if c["chunk_type"] in ("table_summary", "table_pack")]
+    assert tables
+    for chunk in tables:
+        assert "filename:" not in chunk["retrieval_text"]
+        assert chunk["retrieval_text"].startswith("4 Experiments\n")

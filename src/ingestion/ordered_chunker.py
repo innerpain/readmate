@@ -281,6 +281,24 @@ def _path_prefix(path: list[str]) -> str:
     return " > ".join(path) if path else ""
 
 
+def _table_identity_prefix(filename: str) -> str:
+    """D66 (a): a table chunk must say which file it came from.
+
+    A CSV has no heading at all, so its table chunks used to be pure row dumps --
+    a question that names the file ("hard-eval-set.csv 里 …") could not match
+    them, however good the embedding was.  Spreadsheets got their sheet name into
+    ``heading_path`` (D61) and so had *some* identity; a CSV had none.
+
+    PDFs are excluded on purpose: the indexed text of the published PDFs must not
+    drift (guard_pdf_zero_drift), and their tables sit under real headings.
+    """
+
+    name = str(filename or "")
+    if not name or name.lower().endswith(".pdf"):
+        return ""
+    return f"filename: {name}"
+
+
 def _pages_of(element: dict[str, Any]) -> list[int]:
     """Every page the element occupies.
 
@@ -526,7 +544,11 @@ def _make_table_chunks(
     filename: str,
 ) -> list[dict[str, Any]]:
     path = _heading_path(element)
-    prefix = _path_prefix(path)
+    # D66 (a): file identity first, then the heading path -- a CSV has an empty
+    # path, so without this its table chunks carried no identity at all.
+    prefix = "\n".join(
+        part for part in (_table_identity_prefix(filename), _path_prefix(path)) if part
+    )
     structure = element.get("structure") or {}
     caption = str(structure.get("caption") or element.get("text") or "table").strip()
     short_caption = caption if len(caption) <= SHORT_CAPTION_CHARS else caption[: SHORT_CAPTION_CHARS - 1] + "…"
