@@ -619,7 +619,10 @@ def _to_retrieved_chunk(
         # D61: absent on snapshots published before multi-format support, where
         # every page number was a real PDF page.
         page_kind=str(metadata.get("page_kind") or "page"),
-        section=str(metadata.get("section") or "Unknown"),
+        # D63: empty for a heading-less document.  A snapshot published before
+        # 2026-09-30 may still carry the old "Unknown" sentinel; it passes
+        # through untouched rather than being invented here.
+        section=str(metadata.get("section") or ""),
         content_kind=str(metadata.get("content_kind") or _kind_from_type(metadata)),
         atomic=bool(int(metadata.get("atomic") or 0)) if not isinstance(metadata.get("atomic"), bool) else bool(metadata.get("atomic")),
         heading_path=_json_list(metadata.get("heading_path")),

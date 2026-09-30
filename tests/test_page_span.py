@@ -194,3 +194,69 @@ def test_response_schema_keeps_the_span() -> None:
     )
     assert response.citations[0].page_end == 4
     assert response.model_dump()["citations"][0]["page_end"] == 4
+
+
+# ------------------------------------------------- D63: no-heading documents
+def test_a_document_without_headings_has_no_section_label() -> None:
+    """D63 (2026-09-30): a heading-less document (CSV, or a DOCX/MD/HTML without
+    headings) used to reach the user as the literal ``"Unknown"`` -- the preview
+    modal renders ``section``, so that word was printed above the passage.  The
+    honest value is empty, and every hop has to agree."""
+
+    ordered = {
+        "schema": "ordered_document_v1",
+        "document_id": "d1",
+        "source_pdf": "data.csv",
+        "file_type": ".csv",
+        "page_kind": "section",
+        "sequence": [
+            {
+                "ordinal": 0,
+                "element_id": "e0001",
+                "type": "table",
+                "role": "body",
+                "index_policy": "embed",
+                "page": 1,
+                "page_end": 1,
+                "heading_path": [],
+                "heading_path_norm": [],  # no headings anywhere in this document
+                "text": "名称 | 数量",
+                "search_text": "名称 | 数量",
+                "structure": {
+                    "caption": "",
+                    "headers": ["名称", "数量"],
+                    "rows": [["苹果", "3"]],
+                },
+                "atomic": False,
+                "parse_status": "parsed",
+                "payload": {},
+            }
+        ],
+    }
+    chunks, _ = chunk_ordered_document(ordered, filename="data.csv")
+    assert chunks, "the table still has to be chunked"
+    assert all(chunk["section"] == "" for chunk in chunks), [c["section"] for c in chunks]
+
+    indexed = _to_index_chunk({**chunks[0], "document_id": "d1"})
+    assert indexed.metadata["section"] == ""
+
+    retrieved = _to_retrieved_chunk(
+        chunk_id=chunks[0]["chunk_id"],
+        content=chunks[0]["retrieval_text"],
+        metadata=indexed.metadata,
+        score=0.5,
+    )
+    assert retrieved.section == ""
+
+
+def test_a_legacy_unknown_sentinel_is_not_invented_at_read_time() -> None:
+    """A snapshot published before D63 may still carry ``"Unknown"``: the read
+    path passes whatever is stored through instead of minting a new label."""
+
+    retrieved = _to_retrieved_chunk(
+        chunk_id="c1",
+        content="text",
+        metadata={"document_id": "d1", "filename": "legacy.csv", "page": 1, "section": "Unknown"},
+        score=0.5,
+    )
+    assert retrieved.section == "Unknown"

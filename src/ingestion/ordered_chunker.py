@@ -696,7 +696,10 @@ def _base_chunk(
 ) -> dict[str, Any]:
     pages_clean = sorted({int(p) for p in pages if isinstance(p, int) or str(p).isdigit()})
     page = pages_clean[0] if pages_clean else 1
-    section = heading_path[-1] if heading_path else "Unknown"
+    # D63: a document with no headings has no section *name*.  The field stays
+    # empty -- the preview modal renders it, so the old literal "Unknown" put an
+    # English placeholder above the passage the user was reading.
+    section = heading_path[-1] if heading_path else ""
     payload = {
         "document_id": document_id,
         "revision": revision,

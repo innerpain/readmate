@@ -347,7 +347,9 @@ def _to_index_chunk(chunk: dict[str, Any]) -> IndexChunk:
         "page_end": int(chunk.get("page_end") or chunk.get("page") or 1),
         # D61: what that number means (page / slide / sheet / section).
         "page_kind": str(chunk.get("page_kind") or "page"),
-        "section": chunk.get("section") or "Unknown",
+        # D63: a heading-less document (CSV, or a DOCX/MD/HTML with no headings)
+        # carries an empty section -- never the word "Unknown".
+        "section": chunk.get("section") or "",
         "chunk_type": chunk.get("chunk_type"),
         "heading_path": chunk.get("heading_path") or [],
         "element_ids": chunk.get("element_ids") or [],
