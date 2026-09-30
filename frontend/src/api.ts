@@ -146,6 +146,9 @@ export const api = {
   createSession: (collection_id: string | null, mode: string, signal?: AbortSignal) =>
     postJson<{ session_id: string }>("/agent/sessions", { collection_id, mode }, signal),
   sessionMessages: (id: string) => request<{ session_id: string; messages: MessageRow[] }>(`/agent/sessions/${id}/messages`),
+  /** 批 D 阶段 3 (D32): one session row, including the summary breaker state
+   *  (``summary_paused``) so the chat view can say the automatic summary gave up. */
+  getSession: (id: string) => request<SessionRow>(`/agent/sessions/${encodeURIComponent(id)}`),
   /** C4: rename a session (``create_session``/``list_sessions`` always carried a
    *  title; only the write route was missing). */
   renameSession: (id: string, title: string) =>

@@ -16,6 +16,7 @@ import src.api.agent_routes as agent_routes
 from src.agent.collections import CollectionService
 from src.agent.memory.service import MemoryService
 from src.agent.runtime import AgentRunResult
+from src.agent.summary import MAX_SUMMARY_FAILURES
 from src.storage.agent_db import AgentDB
 
 
@@ -81,6 +82,50 @@ def test_list_sessions_route(client_db) -> None:
     assert {session_a, session_b} <= all_sessions
     scoped = client.get("/agent/sessions", params={"collection_id": other}).json()["sessions"]
     assert [item["id"] for item in scoped] == [session_b]
+
+
+def test_session_routes_report_the_summary_breaker(client_db) -> None:
+    """批 D 阶段 3 (D32): the breaker used to live only in the database.
+
+    ``src/tasks/summary.py`` gives up after ``MAX_SUMMARY_FAILURES`` consecutive
+    failures and only a manual compaction bypasses it, so the UI has to be able to
+    *see* that state -- the user previously learned about it only by pressing the
+    button and reading its note.
+    """
+
+    client, db, _ = client_db
+    session_id = client.post("/agent/sessions", json={"mode": "deep"}).json()["session_id"]
+
+    fresh = client.get(f"/agent/sessions/{session_id}").json()
+    assert fresh["summary_failures"] == 0 and fresh["summary_paused"] is False
+
+    db.bump_summary_failure(session_id)
+    db.bump_summary_failure(session_id)
+    # one failure short of the threshold: still running
+    assert client.get(f"/agent/sessions/{session_id}").json()["summary_paused"] is False
+
+    assert db.bump_summary_failure(session_id) == MAX_SUMMARY_FAILURES
+    listed = {row["id"]: row for row in client.get("/agent/sessions").json()["sessions"]}[session_id]
+    assert listed["summary_failures"] == MAX_SUMMARY_FAILURES
+    assert listed["summary_paused"] is True
+    # the sidebar row keeps the scope fields it always had
+    assert "scope_locked" in listed and "scope_ids" in listed
+
+    db.reset_summary_failures(session_id)
+    assert client.get(f"/agent/sessions/{session_id}").json()["summary_paused"] is False
+
+
+def test_get_session_route_returns_scope_and_404s_on_unknown_id(client_db) -> None:
+    client, _, _ = client_db
+    collection_id = client.post("/agent/collections", json={"name": "集"}).json()["collection_id"]
+    session_id = client.post("/agent/sessions", json={"collection_id": collection_id, "mode": "deep"}).json()["session_id"]
+
+    payload = client.get(f"/agent/sessions/{session_id}").json()
+    assert payload["id"] == session_id and payload["mode"] == "deep"
+    assert payload["collection_id"] == collection_id
+    assert payload["scope_locked"] is False and payload["scope_ids"] is None
+
+    assert client.get("/agent/sessions/ses_nope").status_code == 404
 
 
 def test_memory_candidates_and_reject_routes(client_db) -> None:

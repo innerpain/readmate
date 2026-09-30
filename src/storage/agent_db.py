@@ -269,7 +269,7 @@ class AgentDB:
     def list_sessions(self, collection_id: str | None = None, limit: int = 20, offset: int = 0) -> list[dict]:
         """Recent sessions, newest first (FE-4 adds ``offset`` for 加载更多)."""
 
-        query = "SELECT id, title, mode, collection_id, scope_json, created_at, updated_at FROM sessions"
+        query = "SELECT id, title, mode, collection_id, scope_json, created_at, updated_at, summary_failures FROM sessions"
         params: tuple = ()
         if collection_id:
             query += " WHERE collection_id = ?"

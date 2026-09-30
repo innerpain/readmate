@@ -20,6 +20,7 @@ from src.adapter.route_planner import RetrievalRouter
 from src.api.document_quality import document_quality
 from src.llm import LLMClient, ModelRegistry
 from src.agent.memory.service import MemoryService
+from src.agent.summary import MAX_SUMMARY_FAILURES
 from src.agent.runtime import AgentRuntime
 from src.agent.tools import ToolRunner
 from src.config.settings import get_agent_settings, get_retrieval_settings
@@ -173,6 +174,21 @@ def _session_scope_ids(db: AgentDB, session_id: str | None) -> list[str] | None:
     except KeyError:
         return None
     return session_scope(session)
+
+
+def summary_state(row: dict | None) -> dict:
+    """批 D 阶段 3 (D32): the summary breaker, as the UI needs to see it.
+
+    ``src/tasks/summary.py`` stops calling the summariser after
+    ``MAX_SUMMARY_FAILURES`` consecutive failures and only a manual
+    ``POST /sessions/{id}/compact`` (``force=True``) bypasses that.  The state used
+    to live only in the database, so the user had no way to learn that the
+    automatic summary had given up.  Deriving ``summary_paused`` here keeps the
+    threshold in one place instead of duplicating it in the frontend.
+    """
+
+    failures = int((row or {}).get("summary_failures") or 0)
+    return {"summary_failures": failures, "summary_paused": failures >= MAX_SUMMARY_FAILURES}
 
 
 def _maybe_enqueue_summary(runtime: AgentRuntime, session_id: str) -> None:
@@ -357,6 +373,9 @@ def list_sessions(collection_id: str | None = None, limit: int = 20, offset: int
     Each row also reports the scope the session locked on its first turn
     (``scope_ids`` + ``scope_locked``), so reopening an old conversation shows the
     material it was actually started with instead of whatever is selected now.
+
+    批 D 阶段 3 (D32): the rows carry the summary breaker state too -- see
+    ``summary_state``.
     """
     _, db, _, _ = build_runtime()
     rows = db.list_sessions(collection_id, limit=limit, offset=offset)
@@ -364,7 +383,32 @@ def list_sessions(collection_id: str | None = None, limit: int = 20, offset: int
         scope = session_scope(row)
         row["scope_ids"] = scope
         row["scope_locked"] = scope is not None
+        row.update(summary_state(row))
     return {"sessions": rows}
+
+
+@router.get("/sessions/{session_id}")
+def get_session(session_id: str) -> dict:
+    """One session row, for the chat view (批 D 阶段 3 / D32).
+
+    ``/sessions`` answers the sidebar; the chat panel needs exactly its own
+    session -- and with the summary breaker state, so it can tell the user that the
+    automatic summary was paused instead of leaving that fact in the database.
+    """
+    _, db, _, _ = build_runtime()
+    try:
+        row = db.get_session(session_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="session not found") from error
+    scope = session_scope(row)
+    payload = {
+        key: row.get(key)
+        for key in ("id", "title", "mode", "collection_id", "created_at", "updated_at", "summary_upto_message_id")
+    }
+    payload["scope_ids"] = scope
+    payload["scope_locked"] = scope is not None
+    payload.update(summary_state(row))
+    return payload
 
 
 @router.post("/collections/{collection_id}/documents")

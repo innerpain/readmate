@@ -213,6 +213,14 @@ export default function SourcesPanel() {
               {row.scope_locked && (row.scope_ids?.length ?? 0) === 0 && (
                 <span className="shrink-0 rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-500">全库</span>
               )}
+              {row.summary_paused && (
+                <span
+                  className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700"
+                  title={`自动摘要已暂停（连续 ${row.summary_failures ?? 0} 次失败）：打开该会话可手动「压缩本会话」`}
+                >
+                  摘要暂停
+                </span>
+              )}
               {(row.scope_ids?.length ?? 0) <= 1 && row.collection_id && collectionName.get(row.collection_id) && (
                 <span className="shrink-0 rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-500">{collectionName.get(row.collection_id)}</span>
               )}

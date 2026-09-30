@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SseError } from "../api";
 import type { AgentChatResponse, MessageRow, RoundRecord, ToolTraceEntry } from "../types";
 import { applyTurnEvent, extractStreamAnswer, initialTurnState, type TurnLiveState } from "../turnState";
 import { useAppStore } from "../store";
 import { compactNoteFor } from "../compactNote";
+import { summaryPauseNoteFor } from "../summaryPause";
 import MarkdownAnswer from "./MarkdownAnswer";
 import CitationCards from "./CitationCards";
 import AnswerMeta from "./AnswerMeta";
@@ -94,6 +95,16 @@ export default function ChatPanel() {
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // 批 D 阶段 3 (D32): is the automatic summary still alive for this session?
+  // The breaker lives in the backend; this is the only place the user can see it
+  // (and the manual button that can still force a fold-in is right below the note).
+  const session = useQuery({
+    queryKey: ["session", sessionId],
+    queryFn: () => api.getSession(sessionId as string),
+    enabled: Boolean(sessionId),
+  });
+  const pauseNote = summaryPauseNoteFor(session.data);
+
   // history回填 when the session changes; the sidebar list (F3) switches via setSession.
   useEffect(() => {
     setError(null);
@@ -149,6 +160,11 @@ export default function ChatPanel() {
     setCompactNote(null);
     try {
       setCompactNote(compactNoteFor(await api.compactSession(sessionId)));
+      // 批 D 阶段 3 (D32): a successful manual compaction resets the failure
+      // counter, so the "自动摘要已暂停" note has to be re-read -- otherwise it
+      // stays on screen after the user just fixed the thing it complains about.
+      queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
     } catch (cause) {
       setCompactNote(cause instanceof ApiError ? `压缩失败：${describeError(cause) || cause.message}` : "压缩失败");
     } finally {
@@ -363,6 +379,11 @@ export default function ChatPanel() {
             新会话
           </button>
         </div>
+        {pauseNote && (
+          <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+            {pauseNote}
+          </div>
+        )}
         {compactNote && <div className="mb-2 text-[11px] text-gray-500">{compactNote}</div>}
         <div className="flex items-end gap-2">
           <textarea

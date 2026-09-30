@@ -134,6 +134,11 @@ export interface SessionRow {
   /** Collections locked on the first turn (问题.md 第 8 条); null while undecided. */
   scope_ids?: string[] | null;
   scope_locked?: boolean;
+  /** 批 D 阶段 3 (D32): consecutive automatic-summary failures for this session. */
+  summary_failures?: number;
+  /** True once the failures reached the backend's breaker threshold: the automatic
+   *  summary has stopped and only a manual "压缩本会话" can still fold turns in. */
+  summary_paused?: boolean;
 }
 
 export interface MessageRow {
