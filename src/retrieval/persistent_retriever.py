@@ -172,10 +172,12 @@ class PersistentRetriever:
         gate would have admitted).
 
         ``document_ids`` is the collection scope: an Agent collection is a view
-        over the single published snapshot, so out-of-scope chunks are dropped
-        right after fusion, before the quota pick and the dense-top insurance
-        read the pool.  The raw window widens first, because filtering a small
-        collection can otherwise leave fewer hits than the final window wants.
+        over the single published snapshot.  D66 (2026-10-01): that scope is now
+        pushed into the vector search itself (``where``), so the window is spent on
+        the most relevant **in-scope** chunks.  The post-fusion filter below stays
+        as a safety net -- a store that ignores ``where`` must still not leak other
+        documents -- but it is no longer what decides what the window contains.
+        The raw window still widens for a scoped query, which now only buys margin.
 
         ``gate_query`` is the **user's original wording** and drives the table
         gate (``query_wants_tables``) and the B/C noise filter.  It defaults to
@@ -207,11 +209,17 @@ class PersistentRetriever:
         window = max(candidate_k, final_k)
         if document_ids is not None:
             window = min(window * settings.filtered_window_multiplier, settings.max_filtered_window)
+        # D66: hand the scope to the vector search instead of throwing candidates away
+        # afterwards.  The old "wide window then filter" only worked when the in-scope
+        # chunks happened to land inside the global window: with a narrow scope the
+        # filter deleted 76-87 candidates and returned nothing, even for a chunk that
+        # was in the index and matched the question.
+        scope_filter = {"document_id": {"$in": sorted(str(item) for item in document_ids)}} if document_ids else None
         channels: list[Channel] = []
         content_by_id: dict[str, str] = {}
         metadata_by_id: dict[str, dict] = {}
         for index, vector in enumerate(vectors):
-            result = store.query(vector, k=window)
+            result = store.query(vector, k=window, where=scope_filter)
             documents = (result.get("documents") or [[]])[0]
             metadatas = (result.get("metadatas") or [[]])[0]
             distances = (result.get("distances") or [[]])[0]
@@ -230,6 +238,7 @@ class PersistentRetriever:
         fused = reciprocal_rank_fusion(channels, k=settings.rrf_k)
         dropped_out_of_scope = 0
         if document_ids is not None:
+            # Safety net only: the filter above already restricted the window (D66).
             scoped: list = []
             for hit in fused:
                 scope_id = str((metadata_by_id.get(hit.chunk_id) or {}).get("document_id") or "")
@@ -367,6 +376,9 @@ class PersistentRetriever:
             "candidate_k": window,
             "final_k": final_k,
             "document_ids_filter": len(document_ids) if document_ids is not None else None,
+            # D66: whether the scope was pushed into the vector search (always True
+            # when a scope exists; kept so an old trace can be told from a new one).
+            "scope_prefilter": bool(document_ids),
             "dropped_out_of_scope": dropped_out_of_scope,
             "dropped_by_min_score": dropped_by_min_score,
             "min_score": min_score,

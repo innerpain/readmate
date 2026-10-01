@@ -32,18 +32,33 @@ class _FakeBackend:
 
 
 class _FakeStore:
-    def __init__(self, chunks, version_id="v1"):
+    def __init__(self, chunks, version_id="v1", honour_where=True):
         self.version_id = version_id
         self._chunks = chunks
+        self.honour_where = honour_where
+        self.queries: list[dict | None] = []
 
     def all_chunks(self):
         ids = list(self._chunks)
         return ids, [self._chunks[chunk_id]["text"] for chunk_id in ids]
 
-    def query(self, embedding, k):
+    def query(self, embedding, k, where=None):
+        """Mirrors the real store's contract: ``where`` restricts the window.
+
+        D66: the scope is now pushed into the search, so the k results must be the k
+        best *in-scope* chunks.  ``honour_where=False`` simulates a store that ignores
+        it, which is what the post-fusion safety net exists for.
+        """
+
+        self.queries.append(where)
+        allowed = None
+        if where and self.honour_where:
+            allowed = set(where.get("document_id", {}).get("$in") or [])
         query = np.asarray(embedding, dtype=np.float32)
         scored = []
         for chunk_id, payload in self._chunks.items():
+            if allowed is not None and payload["metadata"].get("document_id") not in allowed:
+                continue
             vector = _vector(payload["text"])
             similarity = float(np.dot(query, vector)) if vector.any() and query.any() else 0.0
             scored.append((chunk_id, similarity))
@@ -85,7 +100,7 @@ CHUNKS = {
 }
 
 
-def _retriever(tmp_path=None, **overrides) -> PersistentRetriever:
+def _retriever(tmp_path=None, honour_where=True, **overrides) -> PersistentRetriever:
     settings = RetrievalSettings(**overrides)
     index_dir = (Path(tmp_path) / "chroma") if tmp_path is not None else Path(tempfile.mkdtemp()) / "chroma"
     retriever = PersistentRetriever(
@@ -94,7 +109,7 @@ def _retriever(tmp_path=None, **overrides) -> PersistentRetriever:
         retrieval_settings=settings,
         index_dir=index_dir,
     )
-    snapshot = _FakeStore(CHUNKS)
+    snapshot = _FakeStore(CHUNKS, honour_where=honour_where)
     retriever._load_snapshot = lambda: (  # type: ignore[assignment]
         snapshot,
         {
@@ -122,6 +137,37 @@ def test_scope_filter_keeps_only_documents_inside_the_collection(tmp_path):
     assert {hit.document_id for hit in hits} == {"d1"}
     assert [hit.chunk_id for hit in hits] == ["c-encoder"]
     assert retriever.last_diagnostics["document_ids_filter"] == 1
+    # D66: the window now only contains in-scope chunks, so nothing is thrown away
+    # after fusion -- the old path dropped candidates here.
+    assert retriever.last_diagnostics["scope_prefilter"] is True
+    assert retriever.last_diagnostics["dropped_out_of_scope"] == 0
+
+
+def test_the_scope_is_pushed_into_the_search_window(tmp_path):
+    """D66: a narrow scope used to lose to out-of-scope neighbours.
+
+    With ``k=1`` the unfiltered search returned d2's exact-match chunk, the scope
+    filter then deleted it and the caller got nothing -- even though d1 held a
+    relevant chunk.  Pushing the scope into the search returns d1's chunk instead.
+    """
+
+    retriever = _retriever(tmp_path, candidate_k=1, final_k=1, rerank_enabled=False)
+    snapshot = retriever._load_snapshot()[0]
+
+    hits = retriever.retrieve_multi(["attention encoder layers"], candidate_k=1, final_k=1, document_ids={"d1"})
+
+    assert [hit.chunk_id for hit in hits] == ["c-encoder"]
+    assert snapshot.queries and snapshot.queries[-1] == {"document_id": {"$in": ["d1"]}}
+
+
+def test_a_store_that_ignores_where_cannot_leak_other_documents(tmp_path):
+    """The post-fusion filter stays as the safety net (D66)."""
+
+    retriever = _retriever(tmp_path, honour_where=False, candidate_k=3, final_k=3, rerank_enabled=False)
+    hits = retriever.retrieve_multi(["attention encoder layers"], candidate_k=3, final_k=3, document_ids={"d1"})
+
+    assert hits
+    assert {hit.document_id for hit in hits} == {"d1"}
     assert retriever.last_diagnostics["dropped_out_of_scope"] >= 1
 
 

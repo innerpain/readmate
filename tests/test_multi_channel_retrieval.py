@@ -43,7 +43,8 @@ class _FakeStore:
         ids = list(self._chunks)
         return ids, [self._chunks[chunk_id]["text"] for chunk_id in ids]
 
-    def query(self, embedding, k):
+    def query(self, embedding, k, where=None):  # D66: scope may be pushed in
+        del where
         query = np.asarray(embedding, dtype=np.float32)
         scored = []
         for chunk_id, payload in self._chunks.items():

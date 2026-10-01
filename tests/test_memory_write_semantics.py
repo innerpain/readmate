@@ -8,8 +8,9 @@
 新增需求：模型自己推断的偏好**不每轮试探**，改为每 N 个用户轮回顾一次
 （``memory_review_every_turns``，默认 10，0 = 关闭）。
 
-本文件只测确定性部分（正则、分流、节奏、落地、留痕），真模型端到端在
-tmp/qa-sweep-20260919/ 的 CDP/acc 脚本里。
+本文件只测确定性部分（正则、分流、节奏、落地、留痕）。真模型端到端当时跑在
+`tmp/qa-sweep-20260919/` 的 CDP/acc 脚本里；该目录已归档（`D:\projects\_backups\tmp-archive-*.zip`），
+结论见 `docs/问题台账.md`。
 """
 
 from __future__ import annotations

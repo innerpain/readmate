@@ -170,9 +170,21 @@ class ChromaVectorStore:
         store = cls(root)
         return store, store.manifest
 
-    def query(self, query_embedding, k: int):
-        result = self.collection.query(query_embeddings=[query_embedding.tolist()], n_results=k, include=["documents", "metadatas", "distances"])
-        return result
+    def query(self, query_embedding, k: int, where: dict | None = None):
+        """Nearest chunks for one query vector.
+
+        D66 (scope down): ``where`` pushes the collection scope into the vector
+        search itself, so the k results are the k most relevant *in-scope* chunks.
+        Filtering after an unfiltered search instead spends the window on chunks the
+        caller cannot use -- measured: a narrow scope dropped 76-87 candidates and
+        returned nothing at all.
+        """
+
+        kwargs = {"query_embeddings": [query_embedding.tolist()], "n_results": k,
+                  "include": ["documents", "metadatas", "distances"]}
+        if where:
+            kwargs["where"] = where
+        return self.collection.query(**kwargs)
 
     def all_chunks(self) -> tuple[list[str], list[str]]:
         """Every published chunk id and text, for building a derived index."""
