@@ -91,7 +91,7 @@ class ChromaVectorStore:
         self.manifest = json.loads((version_dir / "manifest.json").read_text(encoding="utf-8"))
 
     @classmethod
-    def publish(cls, index_root, chunks, embeddings, embedding_model, chunking_config, parser_config, quality_config, documents, element_schema_version="legacy", chunker_version="legacy", embedding_config=None):
+    def publish(cls, index_root, chunks, embeddings, embedding_model, chunking_config, parser_config, quality_config, documents, element_schema_version="legacy", chunker_version="legacy", embedding_config=None, reuse_stats=None):
         root = Path(index_root)
         version_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
         # D14 (2026-09-20): build in a temporary directory, publish by rename.
@@ -132,6 +132,9 @@ class ChromaVectorStore:
                 "element_schema_version": element_schema_version,
                 "chunker_version": chunker_version,
                 "documents": documents,
+                # D18: how much of this snapshot was copied from the previous version
+                # instead of recomputed -- the number an audit asks for first.
+                "reuse": dict(reuse_stats or {}),
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             (staging_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -217,6 +220,17 @@ class ChromaVectorStore:
             pass
         return rows
 
+    def close(self) -> None:
+        """Release Chroma's file handles for this version (D18 step 2).
+
+        The build opens the previous version to copy vectors out of it, then the
+        publish's GC deletes that version.  On Docker Desktop's Windows bind mount a
+        renamed directory cannot be removed while a client still holds
+        ``chroma.sqlite3`` (D14b), so the caller closes this handle first.
+        """
+
+        _release_chroma_client(getattr(self, "client", None))
+
     def get_by_ids(self, chunk_ids):
         """Fetch specific chunks (text + metadata) without a similarity search."""
 
@@ -233,6 +247,37 @@ class ChromaVectorStore:
             metadata = metadatas[index] if index < len(metadatas) and metadatas[index] else {}
             fetched[chunk_id] = {"document": document, "metadata": dict(metadata)}
         return fetched
+
+
+    def vectors_for(self, chunk_ids) -> dict[str, list[float]]:
+        """D18 step 2: the stored vectors for these chunk ids, without a search.
+
+        Reusing a vector is safe by construction: ``chunk_id`` hashes the document's
+        ``revision`` together with the chunk's own text, so an id that exists in two
+        versions *is* the same chunk with the same text -- the vector cannot belong to
+        anything else.  Anything missing from the result is simply embedded again.
+        """
+
+        wanted = [str(chunk_id) for chunk_id in chunk_ids]
+        if not wanted:
+            return {}
+        try:
+            result = self.collection.get(ids=wanted, include=["embeddings"])
+        except Exception as error:  # noqa: BLE001 - reuse is an optimisation, never a failure
+            logger.warning("vector reuse unavailable: %s", error)
+            return {}
+        ids = [str(item) for item in (result.get("ids") or [])]
+        embeddings = result.get("embeddings")
+        if embeddings is None:
+            return {}
+        rows = list(embeddings)
+        vectors: dict[str, list[float]] = {}
+        for index, chunk_id in enumerate(ids):
+            if index >= len(rows):
+                break
+            row = rows[index]
+            vectors[chunk_id] = row.tolist() if hasattr(row, "tolist") else list(row)
+        return vectors
 
 
 def _metadata(metadata: dict) -> dict:

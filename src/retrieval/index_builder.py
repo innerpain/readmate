@@ -269,6 +269,80 @@ class IndexBuilder:
             plan.reasons[document.document_id] = "reused"
         return plan
 
+    def _assemble_embeddings(
+        self,
+        index_chunks: list[IndexChunk],
+        retrieval_texts: list[str],
+        plan: ReusePlan,
+    ) -> tuple[Any, int]:
+        """D18 step 2: embed what changed, copy the rest out of the previous version.
+
+        A chunk whose id already exists in the published index *is* the same chunk
+        (ids hash the document revision and the chunk's own text), so its vector is
+        already correct and re-computing it is pure GPU time.  Every candidate is
+        looked up and anything missing is embedded for real -- the failure mode is
+        "slower", never "wrong".
+        """
+
+        import numpy as np
+
+        if not index_chunks:
+            return np.empty((0, 0), dtype="float32"), 0
+
+        candidates = [
+            str(chunk.metadata.get("chunk_id"))
+            for chunk in index_chunks
+            if str(chunk.metadata.get("document_id")) in plan.unchanged
+        ]
+        reused: dict[str, list[float]] = {}
+        if candidates and plan.prev_version:
+            previous = self._open_prev_store()
+            if previous is not None:
+                try:
+                    reused = previous.vectors_for(candidates)
+                finally:
+                    # The GC deletes this version right after the publish; release the
+                    # handles now so the removal is not refused (D14b).
+                    previous.close()
+        if not reused:
+            return self.embedder.embed_texts(retrieval_texts), 0
+
+        dimension = len(next(iter(reused.values())))
+        matrix = np.zeros((len(index_chunks), dimension), dtype="float32")
+        pending_index: list[int] = []
+        pending_texts: list[str] = []
+        for position, chunk in enumerate(index_chunks):
+            vector = reused.get(str(chunk.metadata.get("chunk_id")))
+            if vector is None or len(vector) != dimension:
+                pending_index.append(position)
+                pending_texts.append(retrieval_texts[position])
+                continue
+            matrix[position] = vector
+
+        if pending_texts:
+            fresh = self.embedder.embed_texts(pending_texts)
+            # Defensive: a dimension change the fingerprint could not see (an env
+            # override of the model) would otherwise mix incompatible rows.  Re-embed
+            # everything rather than publish a matrix nobody can explain.
+            if getattr(fresh, "shape", (0, 0))[0] != len(pending_texts) or (
+                len(pending_texts) and fresh.shape[1] != dimension
+            ):
+                logger.warning("vector reuse rejected: dimension mismatch, re-embedding all")
+                return self.embedder.embed_texts(retrieval_texts), 0
+            for row, position in enumerate(pending_index):
+                matrix[position] = fresh[row]
+        return matrix, len(index_chunks) - len(pending_index)
+
+    def _open_prev_store(self):  # -> ChromaVectorStore | None
+        """The published store, or ``None`` when there is nothing to reuse from."""
+
+        try:
+            store, _manifest = ChromaVectorStore.load(self.index_dir)
+        except Exception as error:  # noqa: BLE001 - reuse is optional, never required
+            logger.warning("previous index not readable, embedding everything: %s", error)
+            return None
+        return store
+
     def build(
         self,
         *,
@@ -340,14 +414,19 @@ class IndexBuilder:
                     index_chunks.append(_to_index_chunk(chunk))
 
             plan.chunks_reused = sum(per_doc_counts.get(doc_id, 0) for doc_id in plan.unchanged)
+
+            if progress_callback is not None:
+                progress_callback(IngestionStage.EMBEDDING)
+
+            retrieval_texts = [str(c.metadata.get("retrieval_text") or c.page_content) for c in index_chunks]
+            embeddings, reused_vectors = self._assemble_embeddings(index_chunks, retrieval_texts, plan)
             logger.info(
                 "index reuse: unchanged_docs=%d/%d reused_chunks=%d/%d chunked_docs=%d "
-                "embedded=%d prev_version=%s elapsed=%.1fs",
+                "reused_vectors=%d embedded=%d prev_version=%s elapsed=%.1fs",
                 len(plan.unchanged), len(gathered), plan.chunks_reused, len(index_chunks),
-                chunked_documents, len(index_chunks), plan.prev_version or "-",
-                time.monotonic() - started,
+                chunked_documents, reused_vectors, len(index_chunks) - reused_vectors,
+                plan.prev_version or "-", time.monotonic() - started,
             )
-
             if not plan.unchanged:
                 # Worth a line of its own: "nothing was reused" with no reason is
                 # exactly the ambiguity this feature was meant to remove.
@@ -355,17 +434,6 @@ class IndexBuilder:
                     "index reuse: nothing reused (%s)",
                     plan.reasons.get("*") or "every document failed its own check",
                 )
-            if progress_callback is not None:
-                progress_callback(IngestionStage.EMBEDDING)
-
-            retrieval_texts = [str(c.metadata.get("retrieval_text") or c.page_content) for c in index_chunks]
-            if retrieval_texts:
-                embeddings = self.embedder.embed_texts(retrieval_texts)
-            else:
-                import numpy as np
-
-                embeddings = np.empty((0, 0), dtype="float32")
-
             if progress_callback is not None:
                 progress_callback(IngestionStage.INDEXING)
 
@@ -391,6 +459,13 @@ class IndexBuilder:
                 element_schema_version=ELEMENT_SCHEMA_VERSION,
                 chunker_version=CHUNKER_VERSION,
                 embedding_config=self.embedder.runtime_config(),
+                reuse_stats={
+                    "reused_documents": len(plan.unchanged),
+                    "reused_chunks": plan.chunks_reused,
+                    "reused_vectors": reused_vectors,
+                    "chunked_documents": chunked_documents,
+                    "previous_version": plan.prev_version,
+                },
             )
 
             for document in all_documents:
@@ -414,11 +489,13 @@ class IndexBuilder:
                 "chunker_version": CHUNKER_VERSION,
                 "parse_only": False,
                 "document_counts": per_doc_counts,
-                # D18 step 1: what the reuse decision actually did, so a caller (and
-                # the log above) can tell an incremental build from a full one.
+                # D18: what the reuse decision actually did, so a caller (and the log
+                # above) can tell an incremental build from a full one.
                 "reused_documents": sorted(plan.unchanged),
                 "reused_chunks": plan.chunks_reused,
                 "chunked_documents": chunked_documents,
+                "reused_vectors": reused_vectors,
+                "embedded_chunks": len(index_chunks) - reused_vectors,
                 "reuse_prev_version": plan.prev_version,
             }
             if target_document_id:

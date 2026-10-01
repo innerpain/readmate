@@ -245,3 +245,121 @@ def test_chunk_count_mismatch_is_not_reused(env) -> None:
 
     assert env.spy.chunked == [tampered.document_id]
     assert result["reused_documents"] == [other.document_id]
+
+
+# ---------------------------------------------------------------- D18 step 2
+
+def _published_vectors(env, chunk_ids):
+    from src.retrieval.chroma_store import ChromaVectorStore
+
+    store, _manifest = ChromaVectorStore.load(env.builder.index_dir)
+    try:
+        return store.vectors_for(list(chunk_ids))
+    finally:
+        store.close()
+
+
+def test_second_build_reuses_vectors_without_calling_the_embedder(env) -> None:
+    """Step 2: a rebuild of an unchanged corpus costs no embedding at all."""
+
+    first = _add_document(env, "a.pdf")
+    second = _add_document(env, "b.pdf")
+    first_pass = env.builder.build(skip_parse=True)
+    ids = [
+        json.loads(line)["chunk_id"]
+        for line in (
+            env.registry.data_dir / "parsed" / first.document_id / "chunks.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ] + [
+        json.loads(line)["chunk_id"]
+        for line in (
+            env.registry.data_dir / "parsed" / second.document_id / "chunks.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    vectors_before = _published_vectors(env, ids)
+    embeds_before = len(env.embedder.calls)
+
+    result = env.builder.build(skip_parse=True)
+
+    assert len(env.embedder.calls) == embeds_before  # the embedder was never called
+    assert result["reused_vectors"] == first_pass["chunk_count"]
+    assert result["embedded_chunks"] == 0
+    assert result["chunk_count"] == first_pass["chunk_count"]
+    vectors_after = _published_vectors(env, ids)
+    for chunk_id in ids:
+        assert vectors_after[chunk_id] == vectors_before[chunk_id]
+
+
+def test_only_the_changed_document_is_embedded_again(env) -> None:
+    changed = _add_document(env, "a.pdf")
+    untouched = _add_document(env, "b.pdf")
+    env.builder.build(skip_parse=True)
+
+    _bump_registry_revision(env, changed.document_id)
+    _write_parsed(env, changed.document_id, "revision-after-reparse", "A rewritten paragraph about retrieval.")
+    env.embedder.calls.clear()
+
+    result = env.builder.build(skip_parse=True)
+
+    changed_chunks = len(
+        [
+            line
+            for line in (env.registry.data_dir / "parsed" / changed.document_id / "chunks.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+    )
+    assert result["embedded_chunks"] == changed_chunks
+    assert result["reused_vectors"] == result["chunk_count"] - changed_chunks
+    assert len(env.embedder.calls) == 1
+    assert len(env.embedder.calls[0]) == changed_chunks
+    assert result["reused_documents"] == [untouched.document_id]
+
+
+def test_missing_vectors_are_embedded_instead_of_guessed(env, monkeypatch) -> None:
+    """A partial lookup must not shift rows: the gaps get a real embed call."""
+
+    first = _add_document(env, "a.pdf")
+    second = _add_document(env, "b.pdf")
+    env.builder.build(skip_parse=True)
+
+    from src.retrieval.chroma_store import ChromaVectorStore
+
+    original = ChromaVectorStore.vectors_for
+    dropped: list[str] = []
+
+    def partial(self, chunk_ids):
+        vectors = original(self, chunk_ids)
+        if vectors and not dropped:
+            first_id = next(iter(vectors))
+            dropped.append(first_id)
+            vectors.pop(first_id)
+        return vectors
+
+    monkeypatch.setattr(ChromaVectorStore, "vectors_for", partial)
+    env.embedder.calls.clear()
+
+    result = env.builder.build(skip_parse=True)
+
+    assert dropped  # the fixture actually dropped something
+    assert result["embedded_chunks"] == 1
+    assert result["reused_vectors"] == result["chunk_count"] - 1
+    assert [text for call in env.embedder.calls for text in call]  # something was embedded
+
+
+def test_unreadable_previous_index_falls_back_to_full_embedding(env, monkeypatch) -> None:
+    _add_document(env, "a.pdf")
+    _add_document(env, "b.pdf")
+    first_pass = env.builder.build(skip_parse=True)
+
+    monkeypatch.setattr(IndexBuilder, "_open_prev_store", lambda self: None)
+    env.embedder.calls.clear()
+
+    result = env.builder.build(skip_parse=True)
+
+    assert result["reused_vectors"] == 0
+    assert result["embedded_chunks"] == first_pass["chunk_count"]
+    assert len(env.embedder.calls[0]) == first_pass["chunk_count"]
